@@ -122,6 +122,17 @@
                                     <input type="range" id="quality-slider" class="slider" min="1" max="100" value="70">
                                     <span id="quality-value" class="slider__value">70</span>
                                 </div>
+                                <span id="quality-estimate" class="quality-estimate"></span>
+                            </div>
+                            <div id="lossless-field" class="field hidden">
+                                <div class="field__row field__row--between">
+                                    <label class="field__label">Compression sans perte</label>
+                                    <label class="switch switch--sm">
+                                        <input type="checkbox" id="lossless-toggle">
+                                        <span class="switch__track"></span>
+                                    </label>
+                                </div>
+                                <span class="field__hint">WebP/PNG uniquement — qualite ignoree</span>
                             </div>
                         </div>
                     </div>
@@ -133,10 +144,50 @@
                             <svg class="side-sheet__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                         </button>
                         <div class="side-sheet__section-body">
+                            <!-- Resize Mode -->
                             <div class="field">
-                                <label class="field__label">Resolution max (px)</label>
-                                <input type="number" id="max-resolution" class="field__input" placeholder="ex: 1920" min="100" step="100">
+                                <label class="field__label">Redimensionnement</label>
+                                <select id="resize-mode" class="field__select">
+                                    <option value="none">Aucun</option>
+                                    <option value="percent">Pourcentage</option>
+                                    <option value="width">Largeur fixe</option>
+                                    <option value="height">Hauteur fixe</option>
+                                    <option value="fit">Contenir dans (WxH)</option>
+                                    <option value="exact">Dimensions exactes (WxH)</option>
+                                </select>
                             </div>
+                            <!-- Resize Values (conditionnels) -->
+                            <div id="resize-percent-field" class="field hidden">
+                                <div class="slider-row">
+                                    <input type="range" id="resize-percent" class="slider" min="10" max="100" value="50" step="5">
+                                    <span id="resize-percent-value" class="slider__value">50%</span>
+                                </div>
+                            </div>
+                            <div id="resize-width-field" class="field hidden">
+                                <input type="number" id="resize-width" class="field__input" placeholder="Largeur (px)" min="1" max="10000">
+                            </div>
+                            <div id="resize-height-field" class="field hidden">
+                                <input type="number" id="resize-height" class="field__input" placeholder="Hauteur (px)" min="1" max="10000">
+                            </div>
+                            <div id="resize-fit-field" class="field hidden">
+                                <div class="field__row">
+                                    <input type="number" id="resize-fit-w" class="field__input" placeholder="Largeur" min="1">
+                                    <span class="field__separator">&times;</span>
+                                    <input type="number" id="resize-fit-h" class="field__input" placeholder="Hauteur" min="1">
+                                </div>
+                            </div>
+                            <!-- Metadata -->
+                            <div class="field">
+                                <div class="field__row field__row--between">
+                                    <label class="field__label">Supprimer les metadonnees</label>
+                                    <label class="switch switch--sm">
+                                        <input type="checkbox" id="strip-metadata">
+                                        <span class="switch__track"></span>
+                                    </label>
+                                </div>
+                                <span class="field__hint">EXIF, GPS, date de prise de vue...</span>
+                            </div>
+                            <!-- Target Size -->
                             <div class="field">
                                 <label class="field__label">Taille cible (KB)</label>
                                 <input type="number" id="target-size" class="field__input" placeholder="ex: 500" min="10" step="10">
@@ -151,6 +202,23 @@
                             <svg class="side-sheet__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                         </button>
                         <div class="side-sheet__section-body">
+                            <!-- Suffix -->
+                            <div class="field">
+                                <label class="field__label">Suffixe du fichier</label>
+                                <input type="text" id="output-suffix" class="field__input" value="_compressed" placeholder="_compressed" maxlength="50">
+                                <span class="field__hint">Vide = ecrase l'original</span>
+                            </div>
+                            <!-- Keep Date -->
+                            <div class="field">
+                                <div class="field__row field__row--between">
+                                    <label class="field__label">Conserver la date originale</label>
+                                    <label class="switch switch--sm">
+                                        <input type="checkbox" id="keep-date">
+                                        <span class="switch__track"></span>
+                                    </label>
+                                </div>
+                            </div>
+                            <!-- Output Dir -->
                             <div class="field">
                                 <label class="field__label">Dossier de sortie</label>
                                 <div class="field__row">

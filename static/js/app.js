@@ -34,6 +34,8 @@ document.addEventListener("DOMContentLoaded", () => {
     setupDropZone();
     setupSideSheet();
     setupSections();
+    setupResizeMode();
+    setupLosslessToggle();
     setupViewToggle();
     setupFileListDelegation();
     setupModals();
@@ -135,6 +137,7 @@ async function addFiles(paths) {
         }
     }
 
+    const newPaths = [];
     for (const path of paths) {
         if (state.files.find(f => f.path === path)) continue;
         const name = path.split("/").pop();
@@ -142,13 +145,34 @@ async function addFiles(paths) {
         const format = detectFormat(ext);
         if (format === "unknown") continue;
         state.files.push({
-            path, name, format,
+            path, name, format, size: 0,
             status: "pending", progress: 0, result: null,
         });
+        newPaths.push(path);
     }
     renderFiles();
     updateCompressButton();
     updateSummary();
+
+    // Fetch file sizes for quality estimation
+    if (newPaths.length > 0) {
+        try {
+            const res = await fetch("/api/file-sizes", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ paths: newPaths }),
+            });
+            const data = await res.json();
+            if (data.sizes) {
+                for (const f of state.files) {
+                    if (data.sizes[f.path]) f.size = data.sizes[f.path];
+                }
+                updateQualityEstimate();
+            }
+        } catch (e) {
+            console.warn("File sizes fetch error:", e);
+        }
+    }
 }
 
 function removeFile(index) {
@@ -384,7 +408,10 @@ function setupSideSheet() {
     // Quality slider
     const slider = document.getElementById("quality-slider");
     const valSpan = document.getElementById("quality-value");
-    slider.addEventListener("input", () => { valSpan.textContent = slider.value; });
+    slider.addEventListener("input", () => {
+        valSpan.textContent = slider.value;
+        updateQualityEstimate();
+    });
 
     // Browse folder
     document.getElementById("browse-btn").addEventListener("click", async () => {
@@ -413,17 +440,142 @@ function setupSections() {
     });
 }
 
+// ── Resize Mode ───────────────────────
+
+function setupResizeMode() {
+    const select = document.getElementById("resize-mode");
+    const percentField = document.getElementById("resize-percent-field");
+    const widthField = document.getElementById("resize-width-field");
+    const heightField = document.getElementById("resize-height-field");
+    const fitField = document.getElementById("resize-fit-field");
+    const percentSlider = document.getElementById("resize-percent");
+    const percentValue = document.getElementById("resize-percent-value");
+
+    function updateResizeFields() {
+        const mode = select.value;
+        percentField.classList.toggle("hidden", mode !== "percent");
+        widthField.classList.toggle("hidden", mode !== "width");
+        heightField.classList.toggle("hidden", mode !== "height");
+        fitField.classList.toggle("hidden", mode !== "fit" && mode !== "exact");
+    }
+
+    select.addEventListener("change", updateResizeFields);
+    percentSlider.addEventListener("input", () => {
+        percentValue.textContent = `${percentSlider.value}%`;
+    });
+    updateResizeFields();
+}
+
+// ── Lossless Toggle ───────────────────
+
+function setupLosslessToggle() {
+    const formatSelect = document.getElementById("output-format");
+    const losslessField = document.getElementById("lossless-field");
+    const losslessToggle = document.getElementById("lossless-toggle");
+    const qualitySlider = document.getElementById("quality-slider");
+    const qualityValue = document.getElementById("quality-value");
+    const levelButtons = document.getElementById("level-buttons");
+
+    function updateLosslessVisibility() {
+        const fmt = formatSelect.value;
+        // Show lossless toggle for WebP and PNG (or empty = depends on input files)
+        const showLossless = fmt === "webp" || fmt === "png";
+        losslessField.classList.toggle("hidden", !showLossless);
+        if (!showLossless) {
+            losslessToggle.checked = false;
+        }
+        updateQualityDisabled();
+    }
+
+    function updateQualityDisabled() {
+        const isLossless = losslessToggle.checked;
+        qualitySlider.disabled = isLossless;
+        qualityValue.style.opacity = isLossless ? "0.38" : "1";
+        levelButtons.querySelectorAll(".segmented-button__item").forEach(btn => {
+            if (btn.dataset.level === "custom") return;
+            btn.disabled = isLossless;
+            btn.style.opacity = isLossless ? "0.38" : "1";
+        });
+    }
+
+    formatSelect.addEventListener("change", updateLosslessVisibility);
+    losslessToggle.addEventListener("change", updateQualityDisabled);
+    updateLosslessVisibility();
+}
+
+// ── Quality Estimation ────────────────
+
+function updateQualityEstimate() {
+    const estimateEl = document.getElementById("quality-estimate");
+    if (!estimateEl) return;
+
+    if (state.files.length === 0) {
+        estimateEl.textContent = "";
+        return;
+    }
+
+    const quality = parseInt(document.getElementById("quality-slider").value) || 70;
+    const format = document.getElementById("output-format").value;
+    const lossless = document.getElementById("lossless-toggle").checked;
+
+    // Total original size
+    const totalBytes = state.files.reduce((sum, f) => sum + (f.size || 0), 0);
+    if (totalBytes === 0) {
+        estimateEl.textContent = "";
+        return;
+    }
+
+    // Heuristique d'estimation
+    let factor;
+    if (lossless) {
+        factor = format === "webp" ? 0.75 : 0.85;
+    } else if (format === "webp") {
+        factor = (quality / 100) * 0.6;
+    } else if (format === "jpeg") {
+        factor = (quality / 100) * 0.8;
+    } else if (format === "png") {
+        factor = quality < 70 ? 0.5 : 0.85;
+    } else {
+        // Format original — estimation mixte
+        factor = (quality / 100) * 0.75;
+    }
+
+    const estimated = totalBytes * factor;
+    estimateEl.textContent = `~${humanSize(estimated)} estimes`;
+}
+
 // ── Settings Gather ───────────────────────
 
 function gatherSettings() {
     const activeBtn = document.querySelector("#level-buttons .segmented-button__item.active");
+    const resizeMode = document.getElementById("resize-mode").value;
+
+    // Resize values selon le mode
+    let resizeWidth = null, resizeHeight = null;
+    if (resizeMode === "width") {
+        resizeWidth = document.getElementById("resize-width").value || null;
+    } else if (resizeMode === "height") {
+        resizeHeight = document.getElementById("resize-height").value || null;
+    } else if (resizeMode === "fit" || resizeMode === "exact") {
+        resizeWidth = document.getElementById("resize-fit-w").value || null;
+        resizeHeight = document.getElementById("resize-fit-h").value || null;
+    }
+
     return {
         level: activeBtn ? activeBtn.dataset.level : "medium",
         custom_quality: parseInt(document.getElementById("quality-slider").value) || 70,
-        max_resolution: document.getElementById("max-resolution").value || null,
         output_format: document.getElementById("output-format").value || null,
         target_size_kb: document.getElementById("target-size").value || null,
         output_dir: document.getElementById("output-dir").value || null,
+        // Phase 2
+        resize_mode: resizeMode,
+        resize_width: resizeWidth,
+        resize_height: resizeHeight,
+        resize_percent: parseInt(document.getElementById("resize-percent").value) || 50,
+        strip_metadata: document.getElementById("strip-metadata").checked,
+        suffix: document.getElementById("output-suffix").value,
+        keep_date: document.getElementById("keep-date").checked,
+        lossless: document.getElementById("lossless-toggle").checked,
     };
 }
 
@@ -440,11 +592,40 @@ async function loadSettings() {
             document.getElementById("custom-quality").classList.toggle("hidden", s.level !== "custom");
         }
         if (s.custom_quality) document.getElementById("quality-slider").value = s.custom_quality;
-        if (s.max_resolution) document.getElementById("max-resolution").value = s.max_resolution;
         if (s.output_format) document.getElementById("output-format").value = s.output_format;
         if (s.target_size_kb) document.getElementById("target-size").value = s.target_size_kb;
         if (s.output_dir) document.getElementById("output-dir").value = s.output_dir;
         document.getElementById("quality-value").textContent = document.getElementById("quality-slider").value;
+
+        // Phase 2 — restore resize, metadata, suffix, date, lossless
+        if (s.resize_mode) {
+            document.getElementById("resize-mode").value = s.resize_mode;
+            // Trigger update to show/hide conditional fields
+            document.getElementById("resize-mode").dispatchEvent(new Event("change"));
+        }
+        if (s.resize_percent) {
+            document.getElementById("resize-percent").value = s.resize_percent;
+            document.getElementById("resize-percent-value").textContent = `${s.resize_percent}%`;
+        }
+        if (s.resize_width) document.getElementById("resize-width").value = s.resize_width;
+        if (s.resize_height) document.getElementById("resize-height").value = s.resize_height;
+        // For fit/exact mode, populate both W and H fields
+        if (s.resize_mode === "fit" || s.resize_mode === "exact") {
+            if (s.resize_width) document.getElementById("resize-fit-w").value = s.resize_width;
+            if (s.resize_height) document.getElementById("resize-fit-h").value = s.resize_height;
+        }
+        if (s.strip_metadata) document.getElementById("strip-metadata").checked = true;
+        if (s.suffix !== undefined && s.suffix !== null) {
+            document.getElementById("output-suffix").value = s.suffix;
+        }
+        if (s.keep_date) document.getElementById("keep-date").checked = true;
+        if (s.lossless) {
+            document.getElementById("lossless-toggle").checked = true;
+            // Trigger update to disable quality controls
+            document.getElementById("lossless-toggle").dispatchEvent(new Event("change"));
+        }
+        // Update lossless visibility based on format
+        document.getElementById("output-format").dispatchEvent(new Event("change"));
 
         // App settings (modal)
         const notifToggle = document.getElementById("toggle-notifications");

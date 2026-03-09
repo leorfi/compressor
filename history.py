@@ -21,10 +21,20 @@ DEFAULT_SETTINGS = {
     "notifications_enabled": True,
     "auto_check_updates": True,
     "default_output_dir": None,
+    # Phase 2
+    "resize_mode": "none",
+    "resize_width": None,
+    "resize_height": None,
+    "resize_percent": 100,
+    "strip_metadata": False,
+    "suffix": "_compressed",
+    "keep_date": False,
+    "lossless": False,
 }
 
 VALID_LEVELS = {"high", "medium", "low", "custom"}
 VALID_FORMATS = {"jpeg", "png", "webp", "pdf", None}
+VALID_RESIZE_MODES = {"none", "percent", "width", "height", "fit", "exact"}
 
 
 def _ensure_dir():
@@ -133,5 +143,13 @@ def save_settings(settings: dict):
         cleaned["custom_quality"] = max(1, min(100, int(cleaned["custom_quality"])))
     if cleaned["output_format"] not in VALID_FORMATS:
         cleaned["output_format"] = None
+
+    # Phase 2 validation
+    if cleaned.get("resize_mode") not in VALID_RESIZE_MODES:
+        cleaned["resize_mode"] = "none"
+    if cleaned.get("resize_percent") is not None:
+        cleaned["resize_percent"] = max(1, min(100, int(cleaned["resize_percent"])))
+    if cleaned.get("suffix") is not None:
+        cleaned["suffix"] = str(cleaned["suffix"])[:50]
 
     _write_json_locked(SETTINGS_FILE, cleaned)

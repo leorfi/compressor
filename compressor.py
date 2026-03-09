@@ -38,10 +38,19 @@ class CompressionResult:
 class CompressionSettings:
     level: str = "medium"
     custom_quality: int = 70
-    max_resolution: Optional[int] = None
+    max_resolution: Optional[int] = None      # Compat v1 — preferer resize_mode
     output_format: Optional[str] = None
     target_size_kb: Optional[int] = None
     output_dir: Optional[str] = None
+    # ── Phase 2 ──
+    resize_mode: str = "none"                  # none|percent|width|height|fit|exact
+    resize_width: Optional[int] = None
+    resize_height: Optional[int] = None
+    resize_percent: int = 100
+    strip_metadata: bool = False               # True = supprimer EXIF/XMP
+    suffix: str = "_compressed"                # suffixe du fichier de sortie
+    keep_date: bool = False                    # True = copier mtime de l'original
+    lossless: bool = False                     # True = WebP lossless / PNG sans quantization
 
 
 # ──────────────────────────────────────────────
@@ -93,11 +102,70 @@ def detect_format(file_path: str) -> str:
 
 
 def _resize_image(img: Image.Image, max_px: int) -> Image.Image:
+    """Compat v1 — simple cap sur la plus grande dimension."""
     w, h = img.size
     if max(w, h) <= max_px:
         return img
     ratio = max_px / max(w, h)
     nw, nh = int(w * ratio), int(h * ratio)
+    return img.resize((nw, nh), Image.LANCZOS)
+
+
+def _resize_image_v2(img: Image.Image, settings: CompressionSettings) -> Image.Image:
+    """Redimensionnement avance — 6 modes.
+
+    - none    : pas de changement
+    - percent : reduction par pourcentage (10-100)
+    - width   : largeur fixe, aspect ratio conserve
+    - height  : hauteur fixe, aspect ratio conserve
+    - fit     : contenir dans une boite WxH, aspect ratio conserve, jamais agrandir
+    - exact   : dimensions exactes WxH (peut deformer)
+    """
+    mode = settings.resize_mode
+    if mode == "none":
+        return img
+
+    w, h = img.size
+
+    if mode == "percent":
+        pct = max(1, min(100, settings.resize_percent))
+        nw, nh = max(1, int(w * pct / 100)), max(1, int(h * pct / 100))
+
+    elif mode == "width":
+        tw = settings.resize_width
+        if not tw or tw <= 0 or tw >= w:
+            return img  # pas d'agrandissement
+        ratio = tw / w
+        nw, nh = tw, max(1, int(h * ratio))
+
+    elif mode == "height":
+        th = settings.resize_height
+        if not th or th <= 0 or th >= h:
+            return img
+        ratio = th / h
+        nw, nh = max(1, int(w * ratio)), th
+
+    elif mode == "fit":
+        tw = settings.resize_width
+        th = settings.resize_height
+        if not tw or not th or tw <= 0 or th <= 0:
+            return img
+        # Ne jamais agrandir
+        if w <= tw and h <= th:
+            return img
+        ratio = min(tw / w, th / h)
+        nw, nh = max(1, int(w * ratio)), max(1, int(h * ratio))
+
+    elif mode == "exact":
+        tw = settings.resize_width
+        th = settings.resize_height
+        if not tw or not th or tw <= 0 or th <= 0:
+            return img
+        nw, nh = tw, th
+
+    else:
+        return img
+
     return img.resize((nw, nh), Image.LANCZOS)
 
 
@@ -109,7 +177,8 @@ def _resolve_quality(settings: CompressionSettings, levels: dict) -> dict:
 
 
 def _finalize_result(input_path: str, output_path: str, orig_size: int,
-                     fmt: str, t0: float) -> CompressionResult:
+                     fmt: str, t0: float,
+                     keep_date: bool = False) -> CompressionResult:
     """Bloc commun : compare tailles, garde l'original si plus petit, retourne le résultat."""
     comp_size = os.path.getsize(output_path)
     kept = False
@@ -117,6 +186,15 @@ def _finalize_result(input_path: str, output_path: str, orig_size: int,
         shutil.copy2(input_path, output_path)
         comp_size = orig_size
         kept = True
+
+    # Preserver la date de modification originale
+    if keep_date:
+        try:
+            st = os.stat(input_path)
+            os.utime(output_path, (st.st_atime, st.st_mtime))
+        except OSError:
+            pass
+
     reduction = round((1 - comp_size / orig_size) * 100, 1) if orig_size > 0 else 0
     return CompressionResult(
         input_path=input_path, output_path=output_path,
@@ -135,7 +213,8 @@ def _build_output_path(input_path: str, settings: CompressionSettings, ext: Opti
         ext_map = {"jpeg": ".jpg", "png": ".png", "webp": ".webp", "pdf": ".pdf"}
         ext = ext_map.get(settings.output_format, ext)
     os.makedirs(dirname, exist_ok=True)
-    out = os.path.join(dirname, f"{basename}_compressed{ext}")
+    suffix = settings.suffix if settings.suffix else ""
+    out = os.path.join(dirname, f"{basename}{suffix}{ext}")
     return out
 
 
@@ -206,7 +285,8 @@ def expand_paths(paths: list) -> tuple[list[str], list[str]]:
 # ──────────────────────────────────────────────
 
 def compress_pdf(input_path: str, output_path: str, dpi: int = 150,
-                 quality: int = 70, progress_cb: Callable = None) -> CompressionResult:
+                 quality: int = 70, progress_cb: Callable = None,
+                 keep_date: bool = False) -> CompressionResult:
     if not os.path.isfile(input_path):
         raise FileNotFoundError(f"Fichier introuvable: {input_path}")
 
@@ -243,7 +323,8 @@ def compress_pdf(input_path: str, output_path: str, dpi: int = 150,
         if src:
             src.close()
 
-    return _finalize_result(input_path, output_path, orig_size, "pdf", t0)
+    return _finalize_result(input_path, output_path, orig_size, "pdf", t0,
+                            keep_date=keep_date)
 
 
 # ──────────────────────────────────────────────
@@ -251,29 +332,37 @@ def compress_pdf(input_path: str, output_path: str, dpi: int = 150,
 # ──────────────────────────────────────────────
 
 def compress_jpeg(input_path: str, output_path: str, quality: int = 70,
-                  subsampling: str = "4:2:0", max_resolution: int = None) -> CompressionResult:
+                  subsampling: str = "4:2:0", max_resolution: int = None,
+                  settings: CompressionSettings = None) -> CompressionResult:
     if not os.path.isfile(input_path):
         raise FileNotFoundError(f"Fichier introuvable: {input_path}")
 
     t0 = time.time()
     orig_size = os.path.getsize(input_path)
+    strip_metadata = settings.strip_metadata if settings else False
+    keep_date = settings.keep_date if settings else False
 
     img = Image.open(input_path)
     try:
         exif = img.info.get("exif", None)
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
-        if max_resolution:
+
+        # Resize : Phase 2 mode ou compat v1
+        if settings and settings.resize_mode != "none":
+            img = _resize_image_v2(img, settings)
+        elif max_resolution:
             img = _resize_image(img, max_resolution)
 
         kw = {"quality": quality, "optimize": True, "subsampling": subsampling}
-        if exif:
+        if exif and not strip_metadata:
             kw["exif"] = exif
         img.save(output_path, "JPEG", **kw)
     finally:
         img.close()
 
-    return _finalize_result(input_path, output_path, orig_size, "jpeg", t0)
+    return _finalize_result(input_path, output_path, orig_size, "jpeg", t0,
+                            keep_date=keep_date)
 
 
 # ──────────────────────────────────────────────
@@ -281,18 +370,31 @@ def compress_jpeg(input_path: str, output_path: str, quality: int = 70,
 # ──────────────────────────────────────────────
 
 def compress_png(input_path: str, output_path: str, colors: int = None,
-                 max_resolution: int = None) -> CompressionResult:
+                 max_resolution: int = None,
+                 settings: CompressionSettings = None) -> CompressionResult:
     if not os.path.isfile(input_path):
         raise FileNotFoundError(f"Fichier introuvable: {input_path}")
 
     t0 = time.time()
     orig_size = os.path.getsize(input_path)
+    strip_metadata = settings.strip_metadata if settings else False
+    lossless = settings.lossless if settings else False
+    keep_date = settings.keep_date if settings else False
 
     img = Image.open(input_path)
     try:
-        if max_resolution:
+        # Resize : Phase 2 mode ou compat v1
+        if settings and settings.resize_mode != "none":
+            img = _resize_image_v2(img, settings)
+        elif max_resolution:
             img = _resize_image(img, max_resolution)
-        if colors:
+
+        # Strip metadata
+        if strip_metadata:
+            img.info = {}
+
+        # Lossless = pas de quantization, meme en mode medium/low
+        if not lossless and colors:
             if img.mode == "RGBA":
                 alpha = img.split()[3]
                 rgb = img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=colors).convert("RGB")
@@ -301,11 +403,13 @@ def compress_png(input_path: str, output_path: str, colors: int = None,
                 img.putalpha(alpha)
             elif img.mode != "P":
                 img = img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=colors)
+
         img.save(output_path, "PNG", optimize=True)
     finally:
         img.close()
 
-    return _finalize_result(input_path, output_path, orig_size, "png", t0)
+    return _finalize_result(input_path, output_path, orig_size, "png", t0,
+                            keep_date=keep_date)
 
 
 # ──────────────────────────────────────────────
@@ -313,22 +417,37 @@ def compress_png(input_path: str, output_path: str, colors: int = None,
 # ──────────────────────────────────────────────
 
 def convert_to_webp(input_path: str, output_path: str, quality: int = 70,
-                    target_size_kb: int = None, max_resolution: int = None) -> CompressionResult:
+                    target_size_kb: int = None, max_resolution: int = None,
+                    settings: CompressionSettings = None) -> CompressionResult:
     if not os.path.isfile(input_path):
         raise FileNotFoundError(f"Fichier introuvable: {input_path}")
 
     t0 = time.time()
     orig_size = os.path.getsize(input_path)
+    strip_metadata = settings.strip_metadata if settings else False
+    lossless = settings.lossless if settings else False
+    keep_date = settings.keep_date if settings else False
 
     img = Image.open(input_path)
     try:
         has_alpha = img.mode == "RGBA"
         if not has_alpha and img.mode != "RGB":
             img = img.convert("RGB")
-        if max_resolution:
+
+        # Resize : Phase 2 mode ou compat v1
+        if settings and settings.resize_mode != "none":
+            img = _resize_image_v2(img, settings)
+        elif max_resolution:
             img = _resize_image(img, max_resolution)
 
-        if target_size_kb:
+        # Strip metadata
+        if strip_metadata:
+            img.info = {}
+
+        if lossless:
+            # Mode lossless — ignore quality et target_size
+            img.save(output_path, "WEBP", lossless=True, method=6)
+        elif target_size_kb:
             lo, hi = 10, 95
             best_q = 50
             for _ in range(15):
@@ -347,7 +466,8 @@ def convert_to_webp(input_path: str, output_path: str, quality: int = 70,
     finally:
         img.close()
 
-    return _finalize_result(input_path, output_path, orig_size, "webp", t0)
+    return _finalize_result(input_path, output_path, orig_size, "webp", t0,
+                            keep_date=keep_date)
 
 
 # ──────────────────────────────────────────────
@@ -363,6 +483,12 @@ def compress_file(input_path: str, settings: CompressionSettings,
     fmt = detect_format(input_path)
     output_format = settings.output_format or fmt
 
+    # Compat v1 : max_resolution → resize_mode "fit" (un seul cote)
+    if settings.max_resolution and settings.resize_mode == "none":
+        settings.resize_mode = "fit"
+        settings.resize_width = settings.max_resolution
+        settings.resize_height = settings.max_resolution
+
     # Build output path
     output_path = _build_output_path(input_path, settings)
 
@@ -374,6 +500,7 @@ def compress_file(input_path: str, settings: CompressionSettings,
             quality=params.get("quality", 70),
             target_size_kb=settings.target_size_kb,
             max_resolution=settings.max_resolution,
+            settings=settings,
         )
 
     elif fmt == "pdf":
@@ -386,6 +513,7 @@ def compress_file(input_path: str, settings: CompressionSettings,
             dpi=params["dpi"],
             quality=params["quality"],
             progress_cb=progress_cb,
+            keep_date=settings.keep_date,
         )
 
     elif fmt == "jpeg":
@@ -395,6 +523,7 @@ def compress_file(input_path: str, settings: CompressionSettings,
             quality=params["quality"],
             subsampling=params.get("subsampling", "4:2:0"),
             max_resolution=settings.max_resolution,
+            settings=settings,
         )
 
     elif fmt == "png":
@@ -406,6 +535,7 @@ def compress_file(input_path: str, settings: CompressionSettings,
             input_path, output_path,
             colors=params.get("colors"),
             max_resolution=settings.max_resolution,
+            settings=settings,
         )
 
     elif fmt == "webp":
@@ -415,6 +545,7 @@ def compress_file(input_path: str, settings: CompressionSettings,
             quality=params["quality"],
             target_size_kb=settings.target_size_kb,
             max_resolution=settings.max_resolution,
+            settings=settings,
         )
 
     else:

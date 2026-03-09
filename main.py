@@ -140,6 +140,26 @@ def api_expand():
     return jsonify({"files": files})
 
 
+@app.route("/api/file-sizes", methods=["POST"])
+def api_file_sizes():
+    """Retourne la taille de chaque fichier (pour l'estimation qualite)."""
+    data = request.json or {}
+    paths = data.get("paths", [])
+    if not isinstance(paths, list):
+        return jsonify({"error": "paths doit etre une liste"}), 400
+    sizes = {}
+    for p in paths:
+        if not isinstance(p, str):
+            continue
+        safe = os.path.realpath(p)
+        if os.path.isfile(safe):
+            try:
+                sizes[p] = os.path.getsize(safe)
+            except OSError:
+                sizes[p] = 0
+    return jsonify({"sizes": sizes})
+
+
 @app.route("/api/compress", methods=["POST"])
 def api_compress():
     if state.compression_active:
@@ -183,6 +203,37 @@ def api_compress():
     if output_dir and not os.path.isdir(output_dir):
         return jsonify({"error": f"Dossier de sortie introuvable: {output_dir}"}), 400
 
+    # ── Phase 2 : nouveaux champs ──
+    resize_mode = s.get("resize_mode", "none")
+    if resize_mode not in ("none", "percent", "width", "height", "fit", "exact"):
+        resize_mode = "none"
+
+    resize_width = None
+    if s.get("resize_width"):
+        try:
+            resize_width = max(1, min(10000, int(s["resize_width"])))
+        except (ValueError, TypeError):
+            resize_width = None
+
+    resize_height = None
+    if s.get("resize_height"):
+        try:
+            resize_height = max(1, min(10000, int(s["resize_height"])))
+        except (ValueError, TypeError):
+            resize_height = None
+
+    resize_percent = 100
+    if s.get("resize_percent"):
+        try:
+            resize_percent = max(1, min(100, int(s["resize_percent"])))
+        except (ValueError, TypeError):
+            resize_percent = 100
+
+    strip_metadata = bool(s.get("strip_metadata", False))
+    suffix = str(s.get("suffix", "_compressed"))[:50]
+    keep_date = bool(s.get("keep_date", False))
+    lossless = bool(s.get("lossless", False))
+
     settings = CompressionSettings(
         level=level,
         custom_quality=custom_q,
@@ -190,6 +241,14 @@ def api_compress():
         output_format=out_fmt,
         target_size_kb=target_kb,
         output_dir=output_dir,
+        resize_mode=resize_mode,
+        resize_width=resize_width,
+        resize_height=resize_height,
+        resize_percent=resize_percent,
+        strip_metadata=strip_metadata,
+        suffix=suffix,
+        keep_date=keep_date,
+        lossless=lossless,
     )
 
     def run():

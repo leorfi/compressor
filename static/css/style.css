@@ -1197,6 +1197,57 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--md-sys-color-outline); }
 
+/* ── Field Modifiers ──────────────────── */
+
+.field__row--between {
+    justify-content: space-between;
+    align-items: center;
+}
+
+.field__separator {
+    font: 400 16px/20px 'Roboto', sans-serif;
+    color: var(--md-sys-color-on-surface-variant);
+    flex-shrink: 0;
+    padding: 0 2px;
+}
+
+.field__hint {
+    font: 400 11px/14px 'Roboto', sans-serif;
+    color: var(--md-sys-color-on-surface-variant);
+    opacity: 0.7;
+    margin-top: 2px;
+}
+
+/* ── Small Switch Variant ────────────── */
+
+.switch--sm {
+    width: 44px;
+    height: 28px;
+}
+
+.switch--sm .switch__track::before {
+    width: 14px;
+    height: 14px;
+    left: 3px;
+}
+
+.switch--sm input:checked + .switch__track::before {
+    width: 20px;
+    height: 20px;
+    left: 0;
+    transform: translateX(17px) translateY(-50%);
+}
+
+/* ── Quality Estimation ──────────────── */
+
+.quality-estimate {
+    font: 400 11px/14px 'Roboto', sans-serif;
+    color: var(--md-sys-color-primary);
+    text-align: right;
+    margin-top: 4px;
+    min-height: 14px;
+}
+
 /* ── Utilities ────────────────────────── */
 
 .hidden { display: none !important; }
