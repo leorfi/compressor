@@ -49,14 +49,19 @@ def _read_json_locked(filepath: str, default=None):
 
 
 def _write_json_locked(filepath: str, data):
-    """Écrit un fichier JSON avec un lock exclusif (pas d'écriture concurrente)."""
+    """Écrit un fichier JSON de manière atomique (temp + rename).
+    Evite la corruption si crash entre truncate et écriture."""
     _ensure_dir()
-    with open(filepath, "w") as f:
+    tmp_path = filepath + ".tmp"
+    with open(tmp_path, "w") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         try:
             json.dump(data, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    os.replace(tmp_path, filepath)  # Atomique sur le même filesystem
 
 
 # ── History ──────────────────────────────────

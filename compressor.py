@@ -74,6 +74,7 @@ WEBP_LEVELS = {
 
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
 ZIP_EXTENSIONS = {".zip"}
+MAX_ZIP_EXTRACT_MB = 2048  # Limite d'extraction ZIP : 2 GB
 
 
 # ──────────────────────────────────────────────
@@ -107,6 +108,24 @@ def _resolve_quality(settings: CompressionSettings, levels: dict) -> dict:
     return levels.get(settings.level, levels["medium"])
 
 
+def _finalize_result(input_path: str, output_path: str, orig_size: int,
+                     fmt: str, t0: float) -> CompressionResult:
+    """Bloc commun : compare tailles, garde l'original si plus petit, retourne le résultat."""
+    comp_size = os.path.getsize(output_path)
+    kept = False
+    if comp_size >= orig_size:
+        shutil.copy2(input_path, output_path)
+        comp_size = orig_size
+        kept = True
+    reduction = round((1 - comp_size / orig_size) * 100, 1) if orig_size > 0 else 0
+    return CompressionResult(
+        input_path=input_path, output_path=output_path,
+        original_size=orig_size, compressed_size=comp_size,
+        format=fmt, level="", reduction_pct=reduction,
+        duration=round(time.time() - t0, 1), kept_original=kept,
+    )
+
+
 def _build_output_path(input_path: str, settings: CompressionSettings, ext: Optional[str] = None) -> str:
     dirname = settings.output_dir or os.path.dirname(input_path)
     basename = os.path.splitext(os.path.basename(input_path))[0]
@@ -131,7 +150,12 @@ def extract_zip(zip_path: str) -> tuple:
     files = []
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        # Sécurité : ignorer les chemins qui sortent du dossier temp (zip slip)
+        # Protection zip bomb : vérifier la taille totale avant extraction
+        total_size = sum(info.file_size for info in zf.infolist())
+        if total_size > MAX_ZIP_EXTRACT_MB * 1024 * 1024:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return [], None
+
         for member in zf.namelist():
             # Ignorer les dossiers, fichiers cachés, __MACOSX
             if member.endswith("/") or "/__MACOSX" in member or member.startswith("__MACOSX"):
@@ -153,7 +177,7 @@ def extract_zip(zip_path: str) -> tuple:
     return sorted(files), tmp_dir
 
 
-def expand_paths(paths: list) -> list:
+def expand_paths(paths: list) -> tuple[list[str], list[str]]:
     """Résout les chemins : fichiers, dossiers, et ZIPs.
     Retourne (fichiers, liste de dossiers temp à nettoyer).
     """
@@ -219,20 +243,7 @@ def compress_pdf(input_path: str, output_path: str, dpi: int = 150,
         if src:
             src.close()
 
-    comp_size = os.path.getsize(output_path)
-    kept = False
-    if comp_size >= orig_size:
-        shutil.copy2(input_path, output_path)
-        comp_size = orig_size
-        kept = True
-
-    reduction = round((1 - comp_size / orig_size) * 100, 1) if orig_size > 0 else 0
-    return CompressionResult(
-        input_path=input_path, output_path=output_path,
-        original_size=orig_size, compressed_size=comp_size,
-        format="pdf", level="", reduction_pct=reduction,
-        duration=round(time.time() - t0, 1), kept_original=kept,
-    )
+    return _finalize_result(input_path, output_path, orig_size, "pdf", t0)
 
 
 # ──────────────────────────────────────────────
@@ -262,20 +273,7 @@ def compress_jpeg(input_path: str, output_path: str, quality: int = 70,
     finally:
         img.close()
 
-    comp_size = os.path.getsize(output_path)
-    kept = False
-    if comp_size >= orig_size:
-        shutil.copy2(input_path, output_path)
-        comp_size = orig_size
-        kept = True
-
-    reduction = round((1 - comp_size / orig_size) * 100, 1) if orig_size > 0 else 0
-    return CompressionResult(
-        input_path=input_path, output_path=output_path,
-        original_size=orig_size, compressed_size=comp_size,
-        format="jpeg", level="", reduction_pct=reduction,
-        duration=round(time.time() - t0, 1), kept_original=kept,
-    )
+    return _finalize_result(input_path, output_path, orig_size, "jpeg", t0)
 
 
 # ──────────────────────────────────────────────
@@ -307,20 +305,7 @@ def compress_png(input_path: str, output_path: str, colors: int = None,
     finally:
         img.close()
 
-    comp_size = os.path.getsize(output_path)
-    kept = False
-    if comp_size >= orig_size:
-        shutil.copy2(input_path, output_path)
-        comp_size = orig_size
-        kept = True
-
-    reduction = round((1 - comp_size / orig_size) * 100, 1) if orig_size > 0 else 0
-    return CompressionResult(
-        input_path=input_path, output_path=output_path,
-        original_size=orig_size, compressed_size=comp_size,
-        format="png", level="", reduction_pct=reduction,
-        duration=round(time.time() - t0, 1), kept_original=kept,
-    )
+    return _finalize_result(input_path, output_path, orig_size, "png", t0)
 
 
 # ──────────────────────────────────────────────
@@ -362,20 +347,7 @@ def convert_to_webp(input_path: str, output_path: str, quality: int = 70,
     finally:
         img.close()
 
-    comp_size = os.path.getsize(output_path)
-    kept = False
-    if comp_size >= orig_size:
-        shutil.copy2(input_path, output_path)
-        comp_size = orig_size
-        kept = True
-
-    reduction = round((1 - comp_size / orig_size) * 100, 1) if orig_size > 0 else 0
-    return CompressionResult(
-        input_path=input_path, output_path=output_path,
-        original_size=orig_size, compressed_size=comp_size,
-        format="webp", level="", reduction_pct=reduction,
-        duration=round(time.time() - t0, 1), kept_original=kept,
-    )
+    return _finalize_result(input_path, output_path, orig_size, "webp", t0)
 
 
 # ──────────────────────────────────────────────

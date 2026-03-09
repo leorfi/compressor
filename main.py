@@ -56,6 +56,7 @@ ICON_PATH = os.path.join(APP_DIR, "static", "icon.png")
 VERSION_FILE = os.path.join(APP_DIR, "VERSION")
 
 # Temp dirs créés par l'extraction ZIP (nettoyés après compression)
+_tmp_dirs_lock = threading.Lock()
 _pending_tmp_dirs: list[str] = []
 
 
@@ -126,7 +127,8 @@ def api_expand():
         if not isinstance(p, str):
             return jsonify({"error": f"Chemin invalide: {p}"}), 400
     files, tmp_dirs = expand_paths(paths)
-    _pending_tmp_dirs.extend(tmp_dirs)
+    with _tmp_dirs_lock:
+        _pending_tmp_dirs.extend(tmp_dirs)
     return jsonify({"files": files})
 
 
@@ -142,11 +144,12 @@ def api_compress():
     # — Validation des entrées —
     if not isinstance(raw_files, list):
         return jsonify({"error": "Le champ 'files' doit etre une liste"}), 400
-    # Vérifier que chaque chemin est une string et existe
     for p in raw_files:
         if not isinstance(p, str):
             return jsonify({"error": f"Chemin invalide: {p}"}), 400
 
+    # expand_paths gère les ZIP, dossiers, et fichiers individuels
+    # (les ZIP sont normalement déjà expandés par /api/expand côté frontend)
     files, tmp_dirs = expand_paths(raw_files)
     if not files:
         return jsonify({"error": "Aucun fichier supporte"}), 400
@@ -222,9 +225,9 @@ def api_compress():
         finally:
             compression_active = False
             # Nettoyer les dossiers temporaires (extraction ZIP)
-            global _pending_tmp_dirs
-            all_tmps = list(set(tmp_dirs + _pending_tmp_dirs))
-            _pending_tmp_dirs.clear()
+            with _tmp_dirs_lock:
+                all_tmps = list(set(tmp_dirs + _pending_tmp_dirs))
+                _pending_tmp_dirs.clear()
             for tmp_dir in all_tmps:
                 try:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -549,7 +552,7 @@ def start_app():
         resizable=True,
         js_api=api,
     )
-    webview.start(debug=False)
+    webview.start(debug=os.environ.get("COMPRESSOR_DEBUG", "").lower() in ("1", "true"))
 
 
 if __name__ == "__main__":

@@ -26,7 +26,6 @@ document.addEventListener("DOMContentLoaded", () => {
     loadHistory();
     loadSettings();
     loadAppVersion();
-    loadAppSettings();
 });
 
 // ── Drop Zone & File Selection ────────────
@@ -302,6 +301,8 @@ async function loadSettings() {
     try {
         const res = await fetch("/api/settings");
         const s = await res.json();
+
+        // — Settings de compression (sidebar) —
         if (s.level) {
             document.querySelectorAll(".level-btn").forEach(b => {
                 b.classList.toggle("active", b.dataset.level === s.level);
@@ -314,6 +315,20 @@ async function loadSettings() {
         if (s.target_size_kb) document.getElementById("target-size").value = s.target_size_kb;
         if (s.output_dir) document.getElementById("output-dir").value = s.output_dir;
         document.getElementById("quality-value").textContent = document.getElementById("quality-slider").value;
+
+        // — Settings app (modal parametres) — fusionné ici pour éviter un 2e appel API
+        const notifToggle = document.getElementById("toggle-notifications");
+        const updateToggle = document.getElementById("toggle-auto-updates");
+        if (notifToggle) notifToggle.checked = s.notifications_enabled !== false;
+        if (updateToggle) updateToggle.checked = s.auto_check_updates !== false;
+        if (s.default_output_dir) {
+            document.getElementById("default-output-dir").value = s.default_output_dir;
+        }
+
+        // Auto-check updates si activé (silencieux, après 2s)
+        if (s.auto_check_updates !== false) {
+            setTimeout(() => checkForUpdates(true), 2000);
+        }
     } catch (e) {
         console.error("Load settings error:", e);
     }
@@ -636,46 +651,20 @@ function setupSettingsModal() {
     });
 }
 
-async function loadAppSettings() {
-    try {
-        const res = await fetch("/api/settings");
-        const s = await res.json();
-
-        // Restore toggles
-        const notifToggle = document.getElementById("toggle-notifications");
-        const updateToggle = document.getElementById("toggle-auto-updates");
-        if (notifToggle) notifToggle.checked = s.notifications_enabled !== false;
-        if (updateToggle) updateToggle.checked = s.auto_check_updates !== false;
-
-        // Restore default output dir
-        if (s.default_output_dir) {
-            document.getElementById("default-output-dir").value = s.default_output_dir;
-        }
-
-        // Auto-check updates si activé (silencieux, après 2s)
-        if (s.auto_check_updates !== false) {
-            setTimeout(() => checkForUpdates(true), 2000);
-        }
-    } catch (e) {
-        console.error("Load app settings error:", e);
-    }
-}
+// loadAppSettings() supprimé — fusionné dans loadSettings() pour éviter un double appel API
 
 async function saveAppSettings() {
     try {
-        // On recharge d'abord les settings actuels pour ne pas écraser les settings de compression
-        const res = await fetch("/api/settings");
-        const current = await res.json();
-
-        // Merge avec les nouvelles valeurs
-        current.notifications_enabled = document.getElementById("toggle-notifications").checked;
-        current.auto_check_updates = document.getElementById("toggle-auto-updates").checked;
-        current.default_output_dir = document.getElementById("default-output-dir").value || null;
+        // Merger settings compression (sidebar) + settings app (modal) en un seul POST
+        const settings = gatherSettings();
+        settings.notifications_enabled = document.getElementById("toggle-notifications").checked;
+        settings.auto_check_updates = document.getElementById("toggle-auto-updates").checked;
+        settings.default_output_dir = document.getElementById("default-output-dir").value || null;
 
         await fetch("/api/settings", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify(current),
+            body: JSON.stringify(settings),
         });
     } catch (e) {
         console.error("Save app settings error:", e);
