@@ -51,6 +51,7 @@ compression_active = False
 
 NOTIFIER = "/opt/homebrew/bin/terminal-notifier"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
+ICON_PATH = os.path.join(APP_DIR, "static", "icon.png")
 VERSION_FILE = os.path.join(APP_DIR, "VERSION")
 
 
@@ -459,6 +460,17 @@ def find_port(start=5050, end=5060):
     return start
 
 
+def _set_dock_icon():
+    """Set macOS dock icon from static/icon.png."""
+    try:
+        from AppKit import NSApplication, NSImage
+        icon = NSImage.alloc().initWithContentsOfFile_(ICON_PATH)
+        if icon:
+            NSApplication.sharedApplication().setApplicationIconImage_(icon)
+    except Exception:
+        pass  # Non-critical — skip silently
+
+
 def start_app():
     port = find_port()
     api = Api()
@@ -470,6 +482,9 @@ def start_app():
     )
     server.start()
     time.sleep(0.5)
+
+    # Set dock icon
+    _set_dock_icon()
 
     # Native window
     window = webview.create_window(
