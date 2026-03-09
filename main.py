@@ -16,6 +16,7 @@ from io import BytesIO
 import webview
 from flask import Flask, request, jsonify, render_template, Response
 
+import config  # Charge .env et expose les constantes
 from compressor import (
     compress_file, detect_format, expand_paths,
     CompressionSettings, SUPPORTED_EXTENSIONS,
@@ -30,7 +31,7 @@ from history import (
 # ──────────────────────────────────────────────
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -45,19 +46,27 @@ app = Flask(
     static_folder=os.path.join(os.path.dirname(__file__), "static"),
 )
 
-# SSE state — protégé par un Lock pour éviter les race conditions
-_queues_lock = threading.Lock()
-progress_queues: list[queue.Queue] = []
-compression_active = False
+# ──────────────────────────────────────────────
+#  App State — encapsule tout l'état mutable
+# ──────────────────────────────────────────────
 
-NOTIFIER = "/opt/homebrew/bin/terminal-notifier"
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+class AppState:
+    """Encapsule l'état global mutable de l'application."""
+
+    def __init__(self):
+        self.queues_lock = threading.Lock()
+        self.progress_queues: list[queue.Queue] = []
+        self.compression_active = False
+        self.tmp_dirs_lock = threading.Lock()
+        self.pending_tmp_dirs: list[str] = []
+
+
+state = AppState()
+
+NOTIFIER = config.NOTIFIER_PATH
+APP_DIR = config.APP_DIR
 ICON_PATH = os.path.join(APP_DIR, "static", "icon.png")
 VERSION_FILE = os.path.join(APP_DIR, "VERSION")
-
-# Temp dirs créés par l'extraction ZIP (nettoyés après compression)
-_tmp_dirs_lock = threading.Lock()
-_pending_tmp_dirs: list[str] = []
 
 
 def _read_version() -> str:
@@ -81,15 +90,15 @@ def _parse_version(v: str) -> tuple:
 def _broadcast(data: dict):
     """Envoie un message SSE à tous les clients connectés (thread-safe)."""
     msg = f"data: {json.dumps(data)}\n\n"
-    with _queues_lock:
+    with state.queues_lock:
         dead = []
-        for q in progress_queues:
+        for q in state.progress_queues:
             try:
                 q.put_nowait(msg)
             except queue.Full:
                 dead.append(q)
         for q in dead:
-            progress_queues.remove(q)
+            state.progress_queues.remove(q)
 
 
 def _notify(title: str, message: str):
@@ -118,7 +127,6 @@ def index():
 @app.route("/api/expand", methods=["POST"])
 def api_expand():
     """Pré-extraction des ZIP/dossiers en fichiers individuels."""
-    global _pending_tmp_dirs
     data = request.json or {}
     paths = data.get("paths", [])
     if not isinstance(paths, list):
@@ -127,15 +135,14 @@ def api_expand():
         if not isinstance(p, str):
             return jsonify({"error": f"Chemin invalide: {p}"}), 400
     files, tmp_dirs = expand_paths(paths)
-    with _tmp_dirs_lock:
-        _pending_tmp_dirs.extend(tmp_dirs)
+    with state.tmp_dirs_lock:
+        state.pending_tmp_dirs.extend(tmp_dirs)
     return jsonify({"files": files})
 
 
 @app.route("/api/compress", methods=["POST"])
 def api_compress():
-    global compression_active
-    if compression_active:
+    if state.compression_active:
         return jsonify({"error": "Compression deja en cours"}), 409
 
     data = request.json or {}
@@ -186,8 +193,7 @@ def api_compress():
     )
 
     def run():
-        global compression_active
-        compression_active = True
+        state.compression_active = True
         try:
             results = []
             total = len(files)
@@ -223,11 +229,11 @@ def api_compress():
         except Exception:
             logger.exception("Erreur fatale dans le thread de compression")
         finally:
-            compression_active = False
+            state.compression_active = False
             # Nettoyer les dossiers temporaires (extraction ZIP)
-            with _tmp_dirs_lock:
-                all_tmps = list(set(tmp_dirs + _pending_tmp_dirs))
-                _pending_tmp_dirs.clear()
+            with state.tmp_dirs_lock:
+                all_tmps = list(set(tmp_dirs + state.pending_tmp_dirs))
+                state.pending_tmp_dirs.clear()
             for tmp_dir in all_tmps:
                 try:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -241,8 +247,8 @@ def api_compress():
 @app.route("/api/progress")
 def api_progress():
     q = queue.Queue(maxsize=200)
-    with _queues_lock:
-        progress_queues.append(q)
+    with state.queues_lock:
+        state.progress_queues.append(q)
 
     def generate():
         try:
@@ -255,9 +261,9 @@ def api_progress():
         except GeneratorExit:
             pass
         finally:
-            with _queues_lock:
-                if q in progress_queues:
-                    progress_queues.remove(q)
+            with state.queues_lock:
+                if q in state.progress_queues:
+                    state.progress_queues.remove(q)
 
     return Response(
         generate(),
@@ -502,7 +508,7 @@ class Api:
 #  Main
 # ──────────────────────────────────────────────
 
-def find_port(start=5050, end=5060):
+def find_port(start=config.PORT_START, end=config.PORT_END):
     import socket
     for port in range(start, end):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -552,7 +558,7 @@ def start_app():
         resizable=True,
         js_api=api,
     )
-    webview.start(debug=os.environ.get("COMPRESSOR_DEBUG", "").lower() in ("1", "true"))
+    webview.start(debug=config.DEBUG)
 
 
 if __name__ == "__main__":

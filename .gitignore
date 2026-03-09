@@ -19,5 +19,8 @@ build/
 *.swp
 *.swo
 
+# Config locale
+.env
+
 # Logs
 *.log
