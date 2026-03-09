@@ -552,9 +552,9 @@ def start_app():
     window = webview.create_window(
         title="Compressor",
         url=f"http://127.0.0.1:{port}",
-        width=1100,
-        height=750,
-        min_size=(800, 600),
+        width=1280,
+        height=800,
+        min_size=(1000, 700),
         resizable=True,
         js_api=api,
     )
