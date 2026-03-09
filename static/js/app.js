@@ -31,33 +31,70 @@ document.addEventListener("DOMContentLoaded", () => {
 
 // ── Drop Zone & File Selection ────────────
 
+let _dialogOpen = false;   // Empêche l'ouverture de 2 dialogues en même temps
+let _justDropped = false;  // Ignore les clics juste après un drop
+
 function setupDropZone() {
     const zone = document.getElementById("drop-zone");
     const chooseBtn = document.getElementById("choose-files-btn");
     const addBtn = document.getElementById("add-more-btn");
     const clearBtn = document.getElementById("clear-files-btn");
 
+    // Empêcher le comportement par défaut sur tout le document (évite l'ouverture du fichier)
+    document.addEventListener("dragover", (e) => { e.preventDefault(); });
+    document.addEventListener("drop", (e) => { e.preventDefault(); });
+
     zone.addEventListener("dragover", (e) => {
         e.preventDefault();
+        e.stopPropagation();
         zone.classList.add("drag-over");
     });
     zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
     zone.addEventListener("drop", (e) => {
         e.preventDefault();
+        e.stopPropagation();
         zone.classList.remove("drag-over");
-        chooseFiles();
+        _justDropped = true;
+        setTimeout(() => { _justDropped = false; }, 500);
+        handleDrop(e);
     });
 
     zone.addEventListener("click", (e) => {
+        if (_justDropped) return;
         if (e.target !== chooseBtn) chooseFiles();
     });
-    chooseBtn.addEventListener("click", (e) => { e.stopPropagation(); chooseFiles(); });
+    chooseBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (_justDropped) return;
+        chooseFiles();
+    });
     addBtn.addEventListener("click", chooseFiles);
     clearBtn.addEventListener("click", clearFiles);
 }
 
-async function chooseFiles() {
+async function handleDrop(e) {
     if (state.compressing) return;
+
+    if (window.pywebview && window.pywebview.api) {
+        try {
+            // Lire les chemins directement depuis le pasteboard macOS natif
+            const paths = await window.pywebview.api.get_drop_paths();
+            if (paths && paths.length > 0) {
+                addFiles(paths);
+                return;
+            }
+        } catch (err) {
+            console.warn("get_drop_paths failed:", err);
+        }
+    }
+
+    // Fallback : ouvrir le dialogue natif si le pasteboard n'a rien donné
+    chooseFiles();
+}
+
+async function chooseFiles() {
+    if (state.compressing || _dialogOpen) return;
+    _dialogOpen = true;
     try {
         if (window.pywebview && window.pywebview.api) {
             const paths = await window.pywebview.api.choose_files();
@@ -67,6 +104,8 @@ async function chooseFiles() {
         }
     } catch (e) {
         console.error("File dialog error:", e);
+    } finally {
+        _dialogOpen = false;
     }
 }
 
@@ -100,7 +139,7 @@ function clearFiles() {
 }
 
 function detectFormat(ext) {
-    const map = { pdf: "pdf", jpg: "jpeg", jpeg: "jpeg", png: "png", webp: "webp" };
+    const map = { pdf: "pdf", jpg: "jpeg", jpeg: "jpeg", png: "png", webp: "webp", zip: "zip" };
     return map[ext] || "unknown";
 }
 

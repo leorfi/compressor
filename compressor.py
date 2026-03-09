@@ -5,6 +5,7 @@ import os
 import shutil
 import time
 import tempfile
+import zipfile
 from io import BytesIO
 from dataclasses import dataclass, asdict
 from typing import Optional, Callable
@@ -72,6 +73,7 @@ WEBP_LEVELS = {
 }
 
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
+ZIP_EXTENSIONS = {".zip"}
 
 
 # ──────────────────────────────────────────────
@@ -118,8 +120,45 @@ def _build_output_path(input_path: str, settings: CompressionSettings, ext: Opti
     return out
 
 
+def extract_zip(zip_path: str) -> tuple:
+    """Extrait un ZIP dans un dossier temporaire.
+    Retourne (liste de fichiers supportés, chemin du dossier temp).
+    """
+    if not zipfile.is_zipfile(zip_path):
+        return [], None
+
+    tmp_dir = tempfile.mkdtemp(prefix="compressor_zip_")
+    files = []
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        # Sécurité : ignorer les chemins qui sortent du dossier temp (zip slip)
+        for member in zf.namelist():
+            # Ignorer les dossiers, fichiers cachés, __MACOSX
+            if member.endswith("/") or "/__MACOSX" in member or member.startswith("__MACOSX"):
+                continue
+            basename = os.path.basename(member)
+            if basename.startswith("."):
+                continue
+            # Vérifier que l'extraction reste dans le dossier temp
+            target = os.path.realpath(os.path.join(tmp_dir, member))
+            if not target.startswith(os.path.realpath(tmp_dir)):
+                continue
+            ext = os.path.splitext(basename)[1].lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with zf.open(member) as src, open(target, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                files.append(target)
+
+    return sorted(files), tmp_dir
+
+
 def expand_paths(paths: list) -> list:
+    """Résout les chemins : fichiers, dossiers, et ZIPs.
+    Retourne (fichiers, liste de dossiers temp à nettoyer).
+    """
     result = []
+    tmp_dirs = []
     for path in paths:
         if os.path.isdir(path):
             for root, _, files in os.walk(path):
@@ -127,9 +166,15 @@ def expand_paths(paths: list) -> list:
                     if os.path.splitext(fname)[1].lower() in SUPPORTED_EXTENSIONS:
                         result.append(os.path.join(root, fname))
         elif os.path.isfile(path):
-            if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in SUPPORTED_EXTENSIONS:
                 result.append(path)
-    return result
+            elif ext in ZIP_EXTENSIONS:
+                extracted, tmp_dir = extract_zip(path)
+                result.extend(extracted)
+                if tmp_dir:
+                    tmp_dirs.append(tmp_dir)
+    return result, tmp_dirs
 
 
 # ──────────────────────────────────────────────

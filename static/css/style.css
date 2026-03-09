@@ -412,6 +412,7 @@ body {
 .format-badge.jpeg { background: #ffd60a33; color: var(--yellow); }
 .format-badge.png { background: #30d15833; color: var(--green); }
 .format-badge.webp { background: #0a84ff33; color: var(--accent); }
+.format-badge.zip { background: #bf5af233; color: #bf5af2; }
 
 .file-name {
     flex: 1;

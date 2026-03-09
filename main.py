@@ -9,6 +9,7 @@ import threading
 import queue
 import time
 import subprocess
+import shutil
 import base64
 from io import BytesIO
 
@@ -127,7 +128,7 @@ def api_compress():
         if not isinstance(p, str):
             return jsonify({"error": f"Chemin invalide: {p}"}), 400
 
-    files = expand_paths(raw_files)
+    files, tmp_dirs = expand_paths(raw_files)
     if not files:
         return jsonify({"error": "Aucun fichier supporte"}), 400
 
@@ -201,6 +202,12 @@ def api_compress():
             logger.exception("Erreur fatale dans le thread de compression")
         finally:
             compression_active = False
+            # Nettoyer les dossiers temporaires (extraction ZIP)
+            for tmp_dir in tmp_dirs:
+                try:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
 
     threading.Thread(target=run, daemon=True).start()
     return jsonify({"status": "started", "total": len(files)})
@@ -430,9 +437,10 @@ class Api:
             webview.OPEN_DIALOG,
             allow_multiple=True,
             file_types=(
-                "Tous les fichiers supportes (*.pdf;*.jpg;*.jpeg;*.png;*.webp)",
+                "Tous les fichiers supportes (*.pdf;*.jpg;*.jpeg;*.png;*.webp;*.zip)",
                 "PDF (*.pdf)",
                 "Images (*.jpg;*.jpeg;*.png;*.webp)",
+                "Archives (*.zip)",
             ),
         )
         return list(result) if result else []
@@ -440,6 +448,29 @@ class Api:
     def choose_folder(self):
         result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
         return result[0] if result else None
+
+    def get_drop_paths(self):
+        """Lit les chemins de fichiers depuis le pasteboard macOS natif (drag & drop)."""
+        from compressor import ZIP_EXTENSIONS
+        try:
+            from AppKit import NSPasteboard
+            pb = NSPasteboard.pasteboardWithName_("Apple CFPasteboard drag")
+            filenames = pb.propertyListForType_("NSFilenamesPboardType")
+            if filenames:
+                valid = []
+                for f in filenames:
+                    path = str(f)
+                    if os.path.isfile(path):
+                        ext = os.path.splitext(path)[1].lower()
+                        if ext in SUPPORTED_EXTENSIONS or ext in ZIP_EXTENSIONS:
+                            valid.append(path)
+                    elif os.path.isdir(path):
+                        files, _ = expand_paths([path])
+                        valid.extend(files)
+                return valid
+        except Exception as e:
+            logger.warning("get_drop_paths error: %s", e)
+        return []
 
 
 # ──────────────────────────────────────────────
