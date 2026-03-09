@@ -2,6 +2,7 @@
 """Compressor — App macOS de compression (Flask + pywebview)"""
 
 import os
+import re
 import sys
 import json
 import logging
@@ -147,9 +148,15 @@ def api_file_sizes():
     paths = data.get("paths", [])
     if not isinstance(paths, list):
         return jsonify({"error": "paths doit etre une liste"}), 400
+    if len(paths) > 1000:
+        return jsonify({"error": "Trop de chemins (max 1000)"}), 400
     sizes = {}
     for p in paths:
         if not isinstance(p, str):
+            continue
+        # Restriction aux extensions supportées uniquement
+        ext = os.path.splitext(p)[1].lower()
+        if ext not in SUPPORTED_EXTENSIONS:
             continue
         safe = os.path.realpath(p)
         if os.path.isfile(safe):
@@ -230,7 +237,9 @@ def api_compress():
             resize_percent = 100
 
     strip_metadata = bool(s.get("strip_metadata", False))
-    suffix = str(s.get("suffix", "_compressed"))[:50]
+    raw_suffix = str(s.get("suffix", "_compressed"))[:50]
+    # Sanitize : garder uniquement alphanum, -, _, . et espaces
+    suffix = re.sub(r'[^a-zA-Z0-9_\-. ]', '', raw_suffix)
     keep_date = bool(s.get("keep_date", False))
     lossless = bool(s.get("lossless", False))
 

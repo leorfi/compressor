@@ -214,6 +214,8 @@ def _build_output_path(input_path: str, settings: CompressionSettings, ext: Opti
         ext = ext_map.get(settings.output_format, ext)
     os.makedirs(dirname, exist_ok=True)
     suffix = settings.suffix if settings.suffix else ""
+    # Securite : supprimer tout separateur de chemin du suffix
+    suffix = suffix.replace("/", "").replace("\\", "").replace("..", "")
     out = os.path.join(dirname, f"{basename}{suffix}{ext}")
     return out
 
@@ -484,10 +486,15 @@ def compress_file(input_path: str, settings: CompressionSettings,
     output_format = settings.output_format or fmt
 
     # Compat v1 : max_resolution → resize_mode "fit" (un seul cote)
+    # IMPORTANT : copie pour ne pas muter l'objet original (batch safety)
     if settings.max_resolution and settings.resize_mode == "none":
-        settings.resize_mode = "fit"
-        settings.resize_width = settings.max_resolution
-        settings.resize_height = settings.max_resolution
+        from dataclasses import replace
+        settings = replace(
+            settings,
+            resize_mode="fit",
+            resize_width=settings.max_resolution,
+            resize_height=settings.max_resolution,
+        )
 
     # Build output path
     output_path = _build_output_path(input_path, settings)

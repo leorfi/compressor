@@ -550,22 +550,24 @@ function gatherSettings() {
     const activeBtn = document.querySelector("#level-buttons .segmented-button__item.active");
     const resizeMode = document.getElementById("resize-mode").value;
 
-    // Resize values selon le mode
+    // Resize values selon le mode (convertis en int)
     let resizeWidth = null, resizeHeight = null;
     if (resizeMode === "width") {
-        resizeWidth = document.getElementById("resize-width").value || null;
+        resizeWidth = parseInt(document.getElementById("resize-width").value) || null;
     } else if (resizeMode === "height") {
-        resizeHeight = document.getElementById("resize-height").value || null;
+        resizeHeight = parseInt(document.getElementById("resize-height").value) || null;
     } else if (resizeMode === "fit" || resizeMode === "exact") {
-        resizeWidth = document.getElementById("resize-fit-w").value || null;
-        resizeHeight = document.getElementById("resize-fit-h").value || null;
+        resizeWidth = parseInt(document.getElementById("resize-fit-w").value) || null;
+        resizeHeight = parseInt(document.getElementById("resize-fit-h").value) || null;
     }
+
+    const targetSizeRaw = document.getElementById("target-size").value;
 
     return {
         level: activeBtn ? activeBtn.dataset.level : "medium",
         custom_quality: parseInt(document.getElementById("quality-slider").value) || 70,
         output_format: document.getElementById("output-format").value || null,
-        target_size_kb: document.getElementById("target-size").value || null,
+        target_size_kb: targetSizeRaw ? parseInt(targetSizeRaw) : null,
         output_dir: document.getElementById("output-dir").value || null,
         // Phase 2
         resize_mode: resizeMode,

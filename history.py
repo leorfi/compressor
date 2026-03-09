@@ -148,8 +148,22 @@ def save_settings(settings: dict):
     if cleaned.get("resize_mode") not in VALID_RESIZE_MODES:
         cleaned["resize_mode"] = "none"
     if cleaned.get("resize_percent") is not None:
-        cleaned["resize_percent"] = max(1, min(100, int(cleaned["resize_percent"])))
+        try:
+            cleaned["resize_percent"] = max(1, min(100, int(cleaned["resize_percent"])))
+        except (ValueError, TypeError):
+            cleaned["resize_percent"] = 100
+    if cleaned.get("resize_width") is not None:
+        try:
+            cleaned["resize_width"] = max(1, min(10000, int(cleaned["resize_width"])))
+        except (ValueError, TypeError):
+            cleaned["resize_width"] = None
+    if cleaned.get("resize_height") is not None:
+        try:
+            cleaned["resize_height"] = max(1, min(10000, int(cleaned["resize_height"])))
+        except (ValueError, TypeError):
+            cleaned["resize_height"] = None
     if cleaned.get("suffix") is not None:
-        cleaned["suffix"] = str(cleaned["suffix"])[:50]
+        import re
+        cleaned["suffix"] = re.sub(r'[^a-zA-Z0-9_\-. ]', '', str(cleaned["suffix"])[:50])
 
     _write_json_locked(SETTINGS_FILE, cleaned)
