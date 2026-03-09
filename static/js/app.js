@@ -109,7 +109,25 @@ async function chooseFiles() {
     }
 }
 
-function addFiles(paths) {
+async function addFiles(paths) {
+    // Pré-extraire les ZIP côté backend avant d'ajouter à la liste
+    const hasZip = paths.some(p => p.toLowerCase().endsWith(".zip"));
+    if (hasZip) {
+        try {
+            const res = await fetch("/api/expand", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ paths }),
+            });
+            const data = await res.json();
+            if (data.files && data.files.length > 0) {
+                paths = data.files;
+            }
+        } catch (e) {
+            console.error("Expand ZIP error:", e);
+        }
+    }
+
     for (const path of paths) {
         if (state.files.find(f => f.path === path)) continue;
         const name = path.split("/").pop();

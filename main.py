@@ -55,6 +55,9 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ICON_PATH = os.path.join(APP_DIR, "static", "icon.png")
 VERSION_FILE = os.path.join(APP_DIR, "VERSION")
 
+# Temp dirs créés par l'extraction ZIP (nettoyés après compression)
+_pending_tmp_dirs: list[str] = []
+
 
 def _read_version() -> str:
     """Lit la version depuis le fichier VERSION."""
@@ -109,6 +112,22 @@ def _notify(title: str, message: str):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/api/expand", methods=["POST"])
+def api_expand():
+    """Pré-extraction des ZIP/dossiers en fichiers individuels."""
+    global _pending_tmp_dirs
+    data = request.json or {}
+    paths = data.get("paths", [])
+    if not isinstance(paths, list):
+        return jsonify({"error": "paths doit etre une liste"}), 400
+    for p in paths:
+        if not isinstance(p, str):
+            return jsonify({"error": f"Chemin invalide: {p}"}), 400
+    files, tmp_dirs = expand_paths(paths)
+    _pending_tmp_dirs.extend(tmp_dirs)
+    return jsonify({"files": files})
 
 
 @app.route("/api/compress", methods=["POST"])
@@ -203,7 +222,10 @@ def api_compress():
         finally:
             compression_active = False
             # Nettoyer les dossiers temporaires (extraction ZIP)
-            for tmp_dir in tmp_dirs:
+            global _pending_tmp_dirs
+            all_tmps = list(set(tmp_dirs + _pending_tmp_dirs))
+            _pending_tmp_dirs.clear()
+            for tmp_dir in all_tmps:
                 try:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
                 except Exception:
