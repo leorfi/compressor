@@ -1,27 +1,124 @@
 # Compressor
 
-App macOS native de compression de fichiers (PDF, JPEG, PNG, WebP).
-Interface graphique locale, aucun upload cloud, tout reste sur ta machine.
+> App macOS native de compression de fichiers — PDF, JPEG, PNG, WebP.
+> Tout est traite en local, aucun upload cloud. Vos fichiers restent sur votre machine.
 
-![Version](https://img.shields.io/badge/version-1.0.1-blue)
-![macOS](https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey)
-![Python](https://img.shields.io/badge/python-3.10%2B-yellow)
+<p align="center">
+  <img src="static/icon.png" alt="Compressor" width="128">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-2.2.0-D0BCFF?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey?style=flat-square" alt="macOS">
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square" alt="Python">
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
+</p>
 
 ---
 
 ## Fonctionnalites
 
-- **Compression PDF** — rasterisation par page avec presets DPI/qualite
-- **Compression JPEG** — qualite, subsampling, conservation EXIF
-- **Compression PNG** — reduction de palette adaptative
-- **Conversion WebP** — avec option taille cible (dichotomie)
-- **Batch** — glisser un dossier entier, traitement de tous les fichiers supportes
-- **Previsualisation** — comparaison avant/apres cote a cote
+### Compression
+
+- **PDF** — Rasterisation par page avec controle DPI et qualite
+- **JPEG** — Recompression avec qualite, subsampling, conservation EXIF
+- **PNG** — Reduction de palette adaptative (128-256 couleurs)
+- **WebP** — Compression lossy avec option taille cible (dichotomie)
+- **Batch** — Glisser un dossier entier, traitement parallele
+
+### Outils avances
+
+- **Redimensionnement** — Par largeur, hauteur, pourcentage, fit ou dimensions exactes
+- **Conversion de format** — JPEG vers WebP, PNG vers JPEG, etc.
+- **Taille cible** — Recherche dichotomique de la qualite optimale
+- **Strip metadata** — Suppression des donnees EXIF
+- **Mode lossless** — Compression sans perte (WebP, PNG)
+- **Suffixe personnalise** — `_compressed`, `_web`, `_hd`, etc.
+
+### Presets
+
+- **Systeme de presets** — Sauvegardez vos configs favorites (format, qualite, resize, etc.)
+- **Categories** — Organisez vos presets (Web, Print, Email, Archive...)
+- **Import / Export** — Partagez vos presets en JSON entre collegues
+- **Application rapide** — Selectionnez un preset dans la sidebar, il s'applique instantanement
+
+### Profils utilisateurs
+
+- **Multi-utilisateurs** — Chaque personne a son profil avec ses propres presets et parametres
+- **Mot de passe** — Protection par profil (hash scrypt via Werkzeug)
+- **Donnees isolees** — Settings, presets, historique separes par utilisateur
+
+### Interface
+
+- **Design M3** — Material Design 3 dark theme
+- **Drag & drop** — Glisser-deposer des fichiers ou dossiers
+- **Preview** — Comparaison avant/apres cote a cote avec zoom
 - **Historique** — 500 dernieres compressions avec statistiques
-- **Parametres** — notifications, dossier de sortie par defaut, mise a jour auto
-- **Mises a jour** — verification et installation via Git (pas besoin de token)
-- **Progression temps reel** — Server-Sent Events (SSE) avec reconnexion auto
-- **Notifications macOS** — via `terminal-notifier` (optionnel)
+- **Progression** — Temps reel via Server-Sent Events
+- **Notifications macOS** — Via `terminal-notifier` (optionnel)
+
+### Mises a jour automatiques
+
+- L'app verifie les nouvelles versions au demarrage
+- Un badge apparait si une mise a jour est disponible
+- Un clic pour telecharger, installer et redemarrer — sans intervention manuelle
+
+---
+
+## Installation
+
+### Option 1 — DMG (recommande)
+
+1. Telechargez le `.dmg` depuis la [page Releases](https://github.com/leorfi/compressor/releases/latest)
+2. Ouvrez le DMG, glissez **Compressor** dans **Applications**
+3. Premiere ouverture : **clic-droit > Ouvrir** (app non signee par Apple)
+4. C'est installe. Les futures mises a jour se font automatiquement depuis l'app.
+
+### Option 2 — Depuis les sources
+
+```bash
+# Cloner le depot
+git clone https://github.com/leorfi/compressor.git
+cd compressor
+
+# Environnement virtuel
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Dependances
+pip install -r requirements.txt
+
+# Lancer
+python3 main.py
+```
+
+### Prerequis (sources uniquement)
+
+- macOS 12+ (Monterey)
+- Python 3.10+
+- Git
+
+---
+
+## Utilisation
+
+### Compression
+
+1. **Glisser-deposer** des fichiers ou dossiers dans la zone de drop
+2. Choisir le **niveau** (Haute qualite / Moyen / Leger / Personnalise)
+3. Ajuster les options (format, resize, suffixe...)
+4. Cliquer **Compresser**
+5. Les fichiers sont crees a cote des originaux
+
+### Presets
+
+- **Sauvegarder** : Configurez vos options, cliquez l'icone enregistrer, nommez votre preset
+- **Appliquer** : Selectionnez un preset dans le dropdown, les options s'appliquent
+- **Gerer** : Ouvrez le gestionnaire (icone presets dans la top bar) pour renommer, modifier, supprimer, importer/exporter
+
+### Profils
+
+Au premier lancement, creez votre profil (nom + mot de passe). Vos presets et parametres sont lies a votre profil.
 
 ---
 
@@ -29,20 +126,21 @@ Interface graphique locale, aucun upload cloud, tout reste sur ta machine.
 
 ```
 app/
-├── main.py              # Point d'entree — Flask + pywebview + routes API
-├── compressor.py         # Moteur de compression (PDF, JPEG, PNG, WebP)
-├── history.py            # Persistance historique + settings (JSON + file locking)
-├── VERSION               # Version courante (semver)
-├── requirements.txt      # Dependances Python
-├── launch.command         # Script de lancement double-clic macOS
-├── .gitignore
+├── main.py               # Flask + pywebview + routes API + updates
+├── compressor.py          # Moteur de compression (pur, sans I/O reseau)
+├── history.py             # Persistance : users, settings, presets, historique
+├── config.py              # Configuration (.env + detection mode bundle)
+├── VERSION                # Version semver
+├── requirements.txt       # Dependances Python
+├── compressor.spec        # Config PyInstaller (build .app)
+├── build_dmg.sh           # Script de build DMG automatise
 ├── static/
-│   ├── css/style.css     # Styles (dark theme, modals, toggles)
-│   ├── js/app.js         # Frontend (drag&drop, SSE, modals, settings, updates)
-│   ├── icon.png          # Icone app 512x512
-│   └── icon.icns         # Icone multi-resolution pour .app bundle
+│   ├── css/style.css      # Styles M3 dark theme
+│   ├── js/app.js          # Frontend (drag&drop, SSE, modals, auth, presets)
+│   ├── icon.png           # Icone 512x512
+│   └── icon.icns          # Icone multi-resolution macOS
 └── templates/
-    └── index.html        # Page principale (Jinja2)
+    └── index.html         # Page principale (Jinja2)
 ```
 
 ### Stack technique
@@ -53,212 +151,143 @@ app/
 | Serveur local | **Flask** (127.0.0.1, port 5050-5060) |
 | Compression PDF | **PyMuPDF** (fitz) |
 | Compression images | **Pillow** (PIL) |
-| Progression | Server-Sent Events (SSE) via `queue.Queue` |
-| Persistance | JSON avec `fcntl` file locking |
-| Mises a jour | `git fetch --tags` + comparaison semver locale |
-| Notifications | `terminal-notifier` (optionnel, Homebrew) |
-| Icone dock | **AppKit** (NSImage via pyobjc) |
-
----
-
-## Installation
-
-### Prerequis
-
-- macOS 12+ (Monterey ou plus recent)
-- Python 3.10+
-- Git
-
-### Installation rapide
-
-```bash
-# 1. Cloner le depot
-git clone https://github.com/leorfi/compressor.git
-cd compressor
-
-# 2. Creer l'environnement virtuel
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 3. Installer les dependances
-pip install -r requirements.txt
-
-# 4. Lancer l'app
-python3 main.py
-```
-
-### Raccourci bureau (optionnel)
-
-Un fichier `Compressor.app` peut etre place sur le bureau pour un lancement en double-clic.
-La structure minimale :
-
-```
-Compressor.app/
-└── Contents/
-    ├── Info.plist
-    ├── MacOS/Compressor     # Script bash : cd + activate + python3 main.py
-    └── Resources/icon.icns
-```
-
-> Au premier lancement, macOS peut demander confirmation (app non signee).
-> Solution : **clic droit > Ouvrir** une seule fois.
-
----
-
-## Utilisation
-
-### Lancement
-
-```bash
-# Methode 1 — Terminal
-source .venv/bin/activate && python3 main.py
-
-# Methode 2 — Double-clic sur launch.command (Finder)
-
-# Methode 3 — Double-clic sur Compressor.app (Bureau)
-```
-
-L'app s'ouvre dans une fenetre native macOS (pas un navigateur).
-
-### Compression
-
-1. **Glisser-deposer** des fichiers ou dossiers dans la zone de drop
-2. Ou cliquer **Parcourir** pour ouvrir le dialogue natif
-3. Choisir le **niveau** de compression (Haute qualite / Moyen / Leger / Personnalise)
-4. Cliquer **Compresser**
-5. Les fichiers compresses sont crees a cote des originaux (suffixe `_compressed`)
-
-### Formats supportes
-
-| Format | Extensions | Methode |
-|--------|-----------|---------|
-| PDF | `.pdf` | Rasterisation page par page (DPI + qualite JPEG) |
-| JPEG | `.jpg`, `.jpeg` | Recompression avec controle qualite + subsampling |
-| PNG | `.png` | Reduction palette adaptative (128-256 couleurs) |
-| WebP | `.webp` | Compression lossy avec option taille cible |
-
-### Options avancees
-
-- **Resolution max** — Redimensionne les images au-dela d'un seuil (px)
-- **Format de sortie** — Forcer la conversion (ex: JPEG vers WebP)
-- **Taille cible** — Recherche dichotomique de la qualite optimale (WebP)
-- **Dossier de sortie** — Ecrire les fichiers compresses ailleurs que dans le dossier source
-
-### Previsualisation
-
-Apres compression, cliquer sur l'oeil (icone preview) pour comparer visuellement l'original et le fichier compresse cote a cote.
+| Progression | Server-Sent Events (SSE) |
+| Persistance | JSON + `fcntl` file locking + atomic writes |
+| Auth | **Werkzeug** (scrypt password hashing) |
+| Build | **PyInstaller** + `hdiutil` (DMG natif macOS) |
+| Mises a jour | GitHub Releases API (bundle) / Git tags (dev) |
 
 ---
 
 ## API locale
 
-Le serveur Flask expose ces endpoints (127.0.0.1 uniquement) :
+Le serveur Flask ecoute sur `127.0.0.1` uniquement :
 
 | Methode | Route | Description |
 |---------|-------|-------------|
-| `GET` | `/` | Page principale |
 | `POST` | `/api/compress` | Lance une compression batch |
 | `GET` | `/api/progress` | Stream SSE (progression temps reel) |
-| `GET` | `/api/history` | Historique des compressions |
-| `POST` | `/api/history/clear` | Vider l'historique |
+| `POST` | `/api/estimate` | Estime les tailles pour plusieurs niveaux |
 | `GET` | `/api/settings` | Lire les parametres |
 | `POST` | `/api/settings` | Sauvegarder les parametres |
-| `GET` | `/api/app/version` | Version courante |
-| `GET` | `/api/updates/check` | Verifier les mises a jour (git fetch --tags) |
-| `POST` | `/api/updates/apply` | Installer la mise a jour (git pull --ff-only) |
-| `POST` | `/api/preview` | Generer les thumbnails avant/apres |
+| `GET` | `/api/presets` | Liste des presets + categories |
+| `POST` | `/api/presets` | Creer un preset |
+| `PUT` | `/api/presets/<id>` | Modifier un preset |
+| `DELETE` | `/api/presets/<id>` | Supprimer un preset |
+| `POST` | `/api/presets/import` | Importer des presets (JSON) |
+| `POST` | `/api/presets/export` | Exporter des presets |
+| `GET` | `/api/users/status` | Etat de l'auth (session active ?) |
+| `POST` | `/api/users/login` | Connexion |
+| `POST` | `/api/users/logout` | Deconnexion |
+| `GET` | `/api/updates/check` | Verifier les mises a jour |
+| `POST` | `/api/updates/apply` | Installer la mise a jour |
+| `GET` | `/api/history` | Historique des compressions |
 
 ---
 
-## Parametres
+## Stockage
 
-Les parametres sont stockes dans `~/.config/compressor/settings.json`.
+Toutes les donnees sont stockees localement dans `~/.config/compressor/` :
 
-| Cle | Type | Defaut | Description |
-|-----|------|--------|-------------|
-| `level` | string | `"medium"` | Preset de compression |
-| `custom_quality` | int | `70` | Qualite personnalisee (1-100) |
-| `max_resolution` | int/null | `null` | Resolution max en pixels |
-| `output_format` | string/null | `null` | Format de sortie force |
-| `target_size_kb` | int/null | `null` | Taille cible en Ko (WebP) |
-| `output_dir` | string/null | `null` | Dossier de sortie |
-| `notifications_enabled` | bool | `true` | Notifications macOS |
-| `auto_check_updates` | bool | `true` | Verification auto au lancement |
-| `default_output_dir` | string/null | `null` | Dossier de sortie par defaut |
-
-L'historique est dans `~/.config/compressor/history.json` (500 entrees max).
+```
+~/.config/compressor/
+├── users.json              # Registre des profils (hash, pas de mdp en clair)
+├── session.json            # Session active
+└── users/
+    └── <user_id>/
+        ├── settings.json   # Parametres de l'utilisateur
+        ├── presets.json    # Presets + categories
+        └── history.json   # Historique (500 max)
+```
 
 ---
 
-## Mises a jour
+## Build
 
-L'app verifie les mises a jour via les tags Git du depot distant :
+### Generer le DMG
 
-1. `git fetch --tags` — recupere les tags sans modifier le code
-2. Compare le dernier tag (`v1.0.1`) avec la version locale (`VERSION`)
-3. Si une MAJ est dispo, l'utilisateur peut l'installer (= `git pull --ff-only`)
-4. Redemarrage manuel de l'app apres installation
+```bash
+# Depuis le dossier app/
+bash build_dmg.sh
+```
 
-> Fonctionne avec un depot prive — pas besoin de token GitHub.
-> Condition : le clone local doit avoir acces au remote (SSH ou HTTPS).
+Resultat : `dist/Compressor-X.Y.Z.dmg` (~42 MB)
+
+Le script installe PyInstaller si necessaire, build le `.app`, et cree le DMG avec le layout drag-to-Applications.
+
+### Publier une release
+
+```bash
+# Tag + push
+git tag -a v2.2.0 -m "Description des changements"
+git push origin main --tags
+
+# Publier le DMG sur GitHub Releases
+gh release create v2.2.0 dist/Compressor-2.2.0.dmg --title "v2.2.0" --notes "Changelog ici"
+```
+
+Les utilisateurs recevront automatiquement la notification de mise a jour dans l'app.
 
 ---
 
 ## Securite
 
-- **Aucun upload** — tout est traite en local
-- **Serveur local uniquement** — Flask ecoute sur `127.0.0.1` (pas accessible depuis le reseau)
+- **Zero upload** — Tout est traite en local
+- **Serveur local** — Flask sur `127.0.0.1` uniquement (pas accessible depuis le reseau)
 - **Headers de securite** — `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`
-- **Protection path traversal** — verification `realpath` sur les chemins de preview
-- **Validation des entrees** — types, bornes, formats valides sur toutes les routes
-- **Thread safety** — `threading.Lock` sur les queues SSE, `fcntl` file locking sur le JSON
-- **Pas de dependance externe pour les MAJ** — uniquement Git natif
+- **Protection path traversal** — Verification `realpath` sur tous les chemins
+- **Validation des entrees** — Types, bornes, formats sur toutes les routes
+- **Thread safety** — `threading.Lock` sur les queues SSE, `fcntl` sur les fichiers JSON
+- **Mots de passe** — Hash scrypt (Werkzeug), jamais stockes en clair
+- **Auto-update securise** — Telechargement via API GitHub authentifiee, rollback si echec
 
 ---
 
-## Developpement
-
-### Structure du code
-
-- **`compressor.py`** — Moteur pur (pas de Flask, pas d'I/O reseau). Peut etre utilise en standalone.
-- **`history.py`** — Persistance avec file locking. Thread-safe pour les acces concurrents.
-- **`main.py`** — Orchestrateur : Flask routes + pywebview + SSE + updates.
-- **`app.js`** — Frontend complet : drag&drop, SSE reconnexion, modals, settings.
-
-### Ajouter un format
-
-1. Ajouter l'extension dans `SUPPORTED_EXTENSIONS` (`compressor.py`)
-2. Creer les presets (`XX_LEVELS`)
-3. Ecrire la fonction `compress_xx()`
-4. Ajouter le cas dans `compress_file()` (dispatcher)
-5. Mettre a jour le dialogue natif dans `Api.choose_files()` (`main.py`)
-
-### Conventions Git
+## Conventions Git
 
 - Branche principale : `main`
-- Format commit : `[type] Description courte (vX.Y.Z)`
+- Format commit : `[type] Description (vX.Y.Z)`
 - Types : `feat`, `fix`, `refactor`, `security`, `perf`, `docs`
-- Tags annotes pour chaque version mineure/majeure
+- Tags annotes pour chaque version
 - Versioning semver dans `VERSION`
 
 ---
 
 ## Changelog
 
-### v1.0.1 (2026-03-09)
-- Ajout icone app (dock macOS + favicon)
+### v2.2.0 (2026-03-23)
+- Systeme de profils utilisateurs avec mot de passe
+- Systeme de presets complet (CRUD, categories, import/export)
+- Build DMG distribuable (PyInstaller)
+- Auto-update via GitHub Releases (telecharge + remplace + relance)
+- Bouton "enlever preset" (reset sans supprimer les fichiers)
+- Renommage de presets et categories
+- Selection multiple + tout selectionner
+- Audit securite (6 corrections : SSRF, migration mdp, cleanup)
+
+### v2.1.1 (2026-03-10)
+- Audit securite Phase 2 — 7 corrections
+
+### v2.1.0 (2026-03-10)
+- Resize modes (largeur, hauteur, pourcentage, fit, exact)
+- Strip metadata, suffixe, lossless, estimation multi-niveaux
+
+### v2.0.0 (2026-03-09)
+- Refonte UI : Material Design 3, layout 2 colonnes
+- Audit securite complet
 
 ### v1.0.0 (2026-03-09)
-- Version initiale
-- Compression PDF, JPEG, PNG, WebP
-- Interface GUI native (pywebview + Flask)
-- Drag & drop, preview, historique, statistiques
-- Panneau Parametres (notifications, dossier de sortie, MAJ auto)
-- Systeme de mises a jour via Git
-- Audit securite (25 corrections appliquees)
+- Version initiale — compression PDF, JPEG, PNG, WebP
+- Interface GUI native, drag & drop, preview, historique
 
 ---
 
 ## Licence
 
-Projet interne IPLN. Usage prive.
+MIT — Libre d'utilisation et de modification.
+
+---
+
+<p align="center">
+  <sub>Fait avec Python, Flask et pywebview — IPLN Design</sub>
+</p>

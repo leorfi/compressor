@@ -21,10 +21,20 @@
                 <div class="progress-track"><div id="progress-fill" class="progress-indicator"></div></div>
             </div>
             <div class="top-app-bar__actions">
+                <!-- User Profile -->
+                <button id="user-icon" class="icon-button user-avatar-btn" title="Profil" aria-label="Profil">
+                    <span class="user-avatar" id="user-avatar-initial">?</span>
+                </button>
                 <!-- History -->
                 <button id="history-icon" class="icon-button" title="Historique" aria-label="Historique">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                    </svg>
+                </button>
+                <!-- Presets Manager -->
+                <button id="presets-icon" class="icon-button" title="Gestion presets" aria-label="Gestion presets">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
                     </svg>
                 </button>
                 <!-- Settings -->
@@ -92,6 +102,62 @@
             <!-- SIDE SHEET -->
             <aside class="side-sheet">
                 <div class="side-sheet__content">
+                    <!-- Presets Section -->
+                    <div class="side-sheet__section" data-section="presets">
+                        <button class="side-sheet__section-header" type="button">
+                            <span>Presets</span>
+                            <svg class="side-sheet__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+                        </button>
+                        <div class="side-sheet__section-body">
+                            <!-- Category filter -->
+                            <div class="field">
+                                <label class="field__label">Categorie</label>
+                                <select id="preset-category-filter" class="field__select">
+                                    <option value="">Toutes</option>
+                                </select>
+                            </div>
+                            <!-- Preset selector + save button -->
+                            <div class="field">
+                                <label class="field__label">Preset</label>
+                                <div class="preset-selector">
+                                    <select id="preset-select" class="field__select">
+                                        <option value="">Aucun preset</option>
+                                    </select>
+                                    <button id="preset-clear-btn" class="btn--icon btn--icon-clear hidden" title="Retirer le preset">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                                        </svg>
+                                    </button>
+                                    <button id="preset-save-btn" class="btn--icon" title="Enregistrer le preset">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                            <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
+                            <!-- Save form (hidden by default) -->
+                            <div id="preset-save-form" class="preset-save-form hidden">
+                                <input type="text" id="preset-name" class="field__input field__input--sm" placeholder="Nom du preset">
+                                <div class="preset-category-row">
+                                    <select id="preset-category" class="field__select field__select--sm">
+                                        <option value="">Sans categorie</option>
+                                    </select>
+                                    <button id="preset-add-cat-btn" class="btn--icon btn--icon--sm" title="Nouvelle categorie">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                    </button>
+                                </div>
+                                <div id="sidebar-add-cat-form" class="preset-add-cat-form hidden">
+                                    <input type="text" id="sidebar-cat-name" class="field__input field__input--sm" placeholder="Nom">
+                                    <button id="sidebar-cat-confirm" class="btn btn--tonal btn--sm">OK</button>
+                                </div>
+                                <div class="preset-save-actions">
+                                    <button id="preset-cancel-btn" class="btn btn--text btn--sm">Annuler</button>
+                                    <button id="preset-confirm-btn" class="btn btn--tonal btn--sm">Enregistrer</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Format Section -->
                     <div class="side-sheet__section" data-section="format">
                         <button class="side-sheet__section-header" type="button">
@@ -106,6 +172,7 @@
                                     <option value="jpeg">JPEG</option>
                                     <option value="png">PNG</option>
                                     <option value="webp">WebP</option>
+                                    <option value="pdf">PDF</option>
                                 </select>
                             </div>
                             <div class="field">
@@ -116,6 +183,12 @@
                                     <button data-level="low" class="segmented-button__item">Low</button>
                                     <button data-level="custom" class="segmented-button__item">Custom</button>
                                 </div>
+                                <div id="level-estimates" class="level-estimates hidden">
+                                    <span data-est="high">&mdash;</span>
+                                    <span data-est="medium">&mdash;</span>
+                                    <span data-est="low">&mdash;</span>
+                                    <span data-est="custom">&mdash;</span>
+                                </div>
                             </div>
                             <div id="custom-quality" class="field hidden">
                                 <div class="slider-row">
@@ -123,6 +196,18 @@
                                     <span id="quality-value" class="slider__value">70</span>
                                 </div>
                                 <span id="quality-estimate" class="quality-estimate"></span>
+                            </div>
+                            <div id="custom-pdf" class="field hidden">
+                                <div class="custom-pdf-row">
+                                    <div class="custom-pdf-field">
+                                        <label class="field__label field__label--sm">DPI</label>
+                                        <input type="number" id="pdf-custom-dpi" class="field__input field__input--sm" min="36" max="600" value="150" step="10">
+                                    </div>
+                                    <div class="custom-pdf-field">
+                                        <label class="field__label field__label--sm">Qualite</label>
+                                        <input type="number" id="pdf-custom-quality" class="field__input field__input--sm" min="1" max="100" value="70" step="5">
+                                    </div>
+                                </div>
                             </div>
                             <div id="lossless-field" class="field hidden">
                                 <div class="field__row field__row--between">
@@ -164,16 +249,26 @@
                                 </div>
                             </div>
                             <div id="resize-width-field" class="field hidden">
-                                <input type="number" id="resize-width" class="field__input" placeholder="Largeur (px)" min="1" max="10000">
+                                <input type="number" id="resize-width" class="field__input" placeholder="ex: 1500" min="1" max="10000">
+                                <div class="resize-presets">
+                                    <button type="button" class="preset-chip" data-target="resize-width" data-value="1000">1000</button>
+                                    <button type="button" class="preset-chip" data-target="resize-width" data-value="1500">1500</button>
+                                    <button type="button" class="preset-chip" data-target="resize-width" data-value="2500">2500</button>
+                                </div>
                             </div>
                             <div id="resize-height-field" class="field hidden">
-                                <input type="number" id="resize-height" class="field__input" placeholder="Hauteur (px)" min="1" max="10000">
+                                <input type="number" id="resize-height" class="field__input" placeholder="ex: 1000" min="1" max="10000">
+                                <div class="resize-presets">
+                                    <button type="button" class="preset-chip" data-target="resize-height" data-value="1000">1000</button>
+                                    <button type="button" class="preset-chip" data-target="resize-height" data-value="1500">1500</button>
+                                    <button type="button" class="preset-chip" data-target="resize-height" data-value="2500">2500</button>
+                                </div>
                             </div>
                             <div id="resize-fit-field" class="field hidden">
                                 <div class="field__row">
-                                    <input type="number" id="resize-fit-w" class="field__input" placeholder="Largeur" min="1">
+                                    <input type="number" id="resize-fit-w" class="field__input" placeholder="ex: 1920" min="1">
                                     <span class="field__separator">&times;</span>
-                                    <input type="number" id="resize-fit-h" class="field__input" placeholder="Hauteur" min="1">
+                                    <input type="number" id="resize-fit-h" class="field__input" placeholder="ex: 1080" min="1">
                                 </div>
                             </div>
                             <!-- Metadata -->
@@ -189,8 +284,9 @@
                             </div>
                             <!-- Target Size -->
                             <div class="field">
-                                <label class="field__label">Taille cible (KB)</label>
+                                <label class="field__label">Taille maximale (KB)</label>
                                 <input type="number" id="target-size" class="field__input" placeholder="ex: 500" min="10" step="10">
+                                <span class="field__hint">Le fichier ne depassera pas cette taille</span>
                             </div>
                         </div>
                     </div>
@@ -205,7 +301,7 @@
                             <!-- Suffix -->
                             <div class="field">
                                 <label class="field__label">Suffixe du fichier</label>
-                                <input type="text" id="output-suffix" class="field__input" value="_compressed" placeholder="_compressed" maxlength="50">
+                                <input type="text" id="output-suffix" class="field__input" value="" maxlength="50">
                                 <span class="field__hint">Vide = ecrase l'original</span>
                             </div>
                             <!-- Keep Date -->
@@ -238,40 +334,87 @@
                 <div class="side-sheet__footer">
                     <div id="summary-bar" class="summary-bar">
                         <span id="summary-text">Aucun fichier</span>
+                        <div id="summary-estimate" class="summary-estimate hidden">
+                            <span id="summary-est-size"></span>
+                            <span id="summary-est-time"></span>
+                        </div>
                     </div>
-                    <button id="compress-btn" class="btn btn--filled btn--large" disabled>
-                        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                        <span>Compresser</span>
-                    </button>
+                    <div class="footer-actions">
+                        <button id="compress-btn" class="btn btn--filled btn--large" disabled>
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            <span>Compresser</span>
+                        </button>
+                        <button id="open-folder-btn" class="btn btn--folder hidden" title="Voir le dossier">
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                <circle cx="12" cy="12" r="3"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
             </aside>
         </div>
 
         <!-- ═══ MODALS ═══ -->
 
-        <!-- Preview Modal -->
+        <!-- Preview Modal — Before/After Slider -->
         <div id="preview-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="preview-title">
             <div class="modal__scrim" data-modal="preview-modal"></div>
-            <div class="modal__surface">
+            <div class="modal__surface modal__surface--compare">
                 <div class="modal__header">
-                    <h3 class="modal__title" id="preview-title">Apercu</h3>
+                    <div class="modal__title-row">
+                        <h3 class="modal__title" id="preview-title">Apercu</h3>
+                        <span class="modal__file-info" id="preview-file-info"></span>
+                    </div>
                     <button class="icon-button modal-close-btn" data-modal="preview-modal">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                 </div>
-                <div class="modal__body">
-                    <div class="preview-comparison">
-                        <div class="preview-pane">
-                            <h4>Original</h4>
-                            <div class="preview-img-wrapper"><img id="preview-original" alt="Original"></div>
-                            <span id="preview-original-size" class="preview-size"></span>
+                <div class="modal__body modal__body--flush">
+                    <div id="compare-container" class="compare-container">
+                        <!-- Zoomable wrapper -->
+                        <div id="zoom-wrapper" class="zoom-wrapper">
+                            <!-- After (compressed) = background layer -->
+                            <img id="preview-compressed" class="compare-img compare-img--after" alt="Compresse" draggable="false">
+                            <!-- Before (original) = clipped via clip-path -->
+                            <img id="preview-original" class="compare-img compare-img--before" alt="Original" draggable="false">
                         </div>
-                        <div class="preview-arrow">&#8594;</div>
-                        <div class="preview-pane">
-                            <h4>Compresse</h4>
-                            <div class="preview-img-wrapper"><img id="preview-compressed" alt="Compresse"></div>
-                            <span id="preview-compressed-size" class="preview-size"></span>
+                        <!-- Handle -->
+                        <div id="compare-handle" class="compare-handle">
+                            <div class="compare-handle__line"></div>
+                            <div class="compare-handle__grip">
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+                                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M8.59 16.59L10 18l6-6-6-6-1.41 1.41L13.17 12z"/></svg>
+                            </div>
                         </div>
+                        <!-- Info badges -->
+                        <div id="compare-badge-before" class="compare-badge compare-badge--before">
+                            <span id="preview-original-format" class="compare-badge__format">JPEG</span>
+                            <span class="compare-badge__sep">|</span>
+                            <span id="preview-original-size" class="compare-badge__size"></span>
+                            <span id="preview-original-dims" class="compare-badge__dims"></span>
+                        </div>
+                        <div id="compare-badge-after" class="compare-badge compare-badge--after">
+                            <span id="preview-compressed-format" class="compare-badge__format">JPEG</span>
+                            <span class="compare-badge__sep">|</span>
+                            <span id="preview-compressed-size" class="compare-badge__size"></span>
+                            <span id="preview-compressed-dims" class="compare-badge__dims"></span>
+                        </div>
+                        <!-- File names -->
+                        <span id="compare-name-before" class="compare-filename compare-filename--before"></span>
+                        <span id="compare-name-after" class="compare-filename compare-filename--after"></span>
+                    </div>
+                    <!-- Zoom controls -->
+                    <div id="zoom-controls" class="zoom-controls">
+                        <button id="zoom-out" class="zoom-btn" title="Zoom arriere (-)">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        </button>
+                        <span id="zoom-level" class="zoom-level">100%</span>
+                        <button id="zoom-in" class="zoom-btn" title="Zoom avant (+)">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        </button>
+                        <div class="zoom-sep"></div>
+                        <button id="zoom-fit" class="zoom-btn zoom-btn--fit" title="Ajuster au cadre">Ajuster</button>
                     </div>
                 </div>
             </div>
@@ -389,6 +532,176 @@
                     <div id="history-actions" class="history-actions hidden">
                         <button id="clear-history-btn" class="btn btn--text btn--error">Effacer l'historique</button>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Presets Manager Modal -->
+    <div id="presets-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="presets-modal-title">
+        <div class="modal__scrim" data-modal="presets-modal"></div>
+        <div class="modal__surface">
+            <div class="modal__header">
+                <h3 class="modal__title" id="presets-modal-title">Gestion des presets</h3>
+                <button class="icon-button modal-close-btn" data-modal="presets-modal">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal__body">
+                <!-- Toolbar -->
+                <div class="preset-modal-toolbar">
+                    <select id="preset-modal-cat-filter" class="field__select field__select--sm">
+                        <option value="">Toutes les categories</option>
+                    </select>
+                    <div class="preset-modal-toolbar__spacer"></div>
+                    <button id="preset-modal-import-btn" class="btn btn--tonal btn--sm">Importer</button>
+                    <button id="preset-modal-add-cat-btn" class="btn btn--text btn--sm">+ Categorie</button>
+                    <button id="preset-modal-manage-cat-btn" class="btn btn--text btn--sm">Gerer</button>
+                </div>
+                <!-- Add category inline form (hidden) -->
+                <div id="preset-modal-add-cat-form" class="preset-add-cat-form hidden">
+                    <input type="text" id="preset-modal-cat-name" class="field__input field__input--sm" placeholder="Nom de la categorie">
+                    <button id="preset-modal-cat-confirm" class="btn btn--tonal btn--sm">Ajouter</button>
+                    <button id="preset-modal-cat-cancel" class="btn btn--text btn--sm">Annuler</button>
+                </div>
+                <!-- Category management (hidden by default) -->
+                <div id="preset-modal-cat-list" class="preset-cat-list hidden"></div>
+                <!-- Select all + Preset list -->
+                <label id="preset-select-all-row" class="preset-modal-select-all hidden">
+                    <input type="checkbox" id="preset-select-all"> Tout selectionner
+                </label>
+                <div id="preset-modal-empty" class="preset-modal-empty hidden">Aucun preset enregistre</div>
+                <div id="preset-modal-list" class="preset-modal-list"></div>
+                <!-- Footer -->
+                <div id="preset-modal-footer" class="preset-modal-footer hidden">
+                    <button id="preset-modal-export-btn" class="btn btn--tonal btn--sm">Exporter la selection</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Modal (non-dismissable) -->
+    <div id="login-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
+        <div class="modal__scrim"></div>
+        <div class="modal__surface modal__surface--sm modal__surface--login">
+            <div class="modal__header">
+                <h3 class="modal__title" id="login-modal-title">Connexion</h3>
+            </div>
+            <div class="modal__body">
+                <div id="login-user-list" class="login-user-list"></div>
+                <div id="login-password-field" class="field hidden">
+                    <label class="field__label">Mot de passe</label>
+                    <input type="password" id="login-password" class="field__input" placeholder="Mot de passe" autocomplete="off">
+                    <span id="login-error" class="field__error hidden"></span>
+                </div>
+                <div class="login-actions">
+                    <button id="login-btn" class="btn btn--filled btn--full" disabled>Se connecter</button>
+                    <button id="login-create-btn" class="btn btn--text btn--full">Creer un profil</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Profile Modal -->
+    <div id="create-profile-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="create-profile-title">
+        <div class="modal__scrim"></div>
+        <div class="modal__surface modal__surface--sm">
+            <div class="modal__header">
+                <h3 class="modal__title" id="create-profile-title">Nouveau profil</h3>
+                <button class="icon-button modal-close-btn" data-modal="create-profile-modal">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal__body">
+                <div class="field">
+                    <label class="field__label">Nom du profil</label>
+                    <input type="text" id="create-profile-name" class="field__input" maxlength="30" placeholder="Ex: Leo">
+                </div>
+                <div class="field">
+                    <label class="field__label">Mot de passe</label>
+                    <input type="password" id="create-profile-password" class="field__input" placeholder="Mot de passe">
+                </div>
+                <div class="field">
+                    <label class="field__label">Confirmer le mot de passe</label>
+                    <input type="password" id="create-profile-confirm" class="field__input" placeholder="Confirmer">
+                </div>
+                <span id="create-profile-error" class="field__error hidden"></span>
+                <button id="create-profile-btn" class="btn btn--filled btn--full" style="margin-top:8px">Creer le profil</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Menu Modal -->
+    <div id="user-menu-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="user-menu-title">
+        <div class="modal__scrim" data-modal="user-menu-modal"></div>
+        <div class="modal__surface modal__surface--sm">
+            <div class="modal__header">
+                <h3 class="modal__title" id="user-menu-title">Profil</h3>
+                <button class="icon-button modal-close-btn" data-modal="user-menu-modal">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal__body">
+                <div id="user-menu-info" class="user-menu-info"></div>
+                <div class="user-menu-actions">
+                    <button id="user-edit-btn" class="btn btn--tonal btn--full">Modifier le profil</button>
+                    <button id="user-switch-btn" class="btn btn--tonal btn--full">Changer d'utilisateur</button>
+                    <button id="user-delete-btn" class="btn btn--text btn--error btn--full">Supprimer le profil</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Profile Modal -->
+    <div id="edit-profile-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-profile-title">
+        <div class="modal__scrim" data-modal="edit-profile-modal"></div>
+        <div class="modal__surface modal__surface--sm">
+            <div class="modal__header">
+                <h3 class="modal__title" id="edit-profile-title">Modifier le profil</h3>
+                <button class="icon-button modal-close-btn" data-modal="edit-profile-modal">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal__body">
+                <div class="field">
+                    <label class="field__label">Nom</label>
+                    <input type="text" id="edit-profile-name" class="field__input" maxlength="30">
+                </div>
+                <div class="field">
+                    <label class="field__label">Mot de passe actuel</label>
+                    <input type="password" id="edit-profile-current-pw" class="field__input" placeholder="Requis">
+                </div>
+                <div class="field">
+                    <label class="field__label">Nouveau mot de passe (optionnel)</label>
+                    <input type="password" id="edit-profile-new-pw" class="field__input" placeholder="Laisser vide pour ne pas changer">
+                </div>
+                <span id="edit-profile-error" class="field__error hidden"></span>
+                <button id="edit-profile-save-btn" class="btn btn--filled btn--full" style="margin-top:8px">Enregistrer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Profile Modal -->
+    <div id="delete-profile-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-profile-title">
+        <div class="modal__scrim" data-modal="delete-profile-modal"></div>
+        <div class="modal__surface modal__surface--sm">
+            <div class="modal__header">
+                <h3 class="modal__title" id="delete-profile-title">Supprimer le profil</h3>
+                <button class="icon-button modal-close-btn" data-modal="delete-profile-modal">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="modal__body">
+                <p style="font-size:14px;color:var(--md-sys-color-on-surface-variant);margin-bottom:12px">
+                    Cette action est irreversible. Entrez votre mot de passe pour confirmer.
+                </p>
+                <div class="field">
+                    <input type="password" id="delete-profile-pw" class="field__input" placeholder="Mot de passe">
+                </div>
+                <span id="delete-profile-error" class="field__error hidden"></span>
+                <div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+                    <button class="btn btn--text" data-modal="delete-profile-modal" onclick="closeModal('delete-profile-modal')">Annuler</button>
+                    <button id="delete-profile-confirm-btn" class="btn btn--filled btn--error">Supprimer</button>
                 </div>
             </div>
         </div>

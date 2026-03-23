@@ -2,8 +2,14 @@
 """Configuration de l'application — lit .env si présent, sinon valeurs par défaut."""
 
 import os
+import sys
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+IS_BUNDLED = getattr(sys, '_MEIPASS', False)
+
+if IS_BUNDLED:
+    APP_DIR = sys._MEIPASS
+else:
+    APP_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE = os.path.join(APP_DIR, ".env")
 
 
@@ -37,3 +43,7 @@ PORT_START = int(os.environ.get("COMPRESSOR_PORT_START", "5050"))
 PORT_END = int(os.environ.get("COMPRESSOR_PORT_END", "5060"))
 NOTIFIER_PATH = os.environ.get("COMPRESSOR_NOTIFIER", "/opt/homebrew/bin/terminal-notifier")
 LOG_LEVEL = os.environ.get("COMPRESSOR_LOG_LEVEL", "INFO").upper()
+
+# GitHub — pour les mises a jour en mode bundle (repo prive)
+GITHUB_REPO = os.environ.get("COMPRESSOR_GITHUB_REPO", "leorfi/compressor")
+GITHUB_TOKEN = os.environ.get("COMPRESSOR_GITHUB_TOKEN", "")

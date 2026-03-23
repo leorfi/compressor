@@ -51,6 +51,7 @@ class CompressionSettings:
     suffix: str = "_compressed"                # suffixe du fichier de sortie
     keep_date: bool = False                    # True = copier mtime de l'original
     lossless: bool = False                     # True = WebP lossless / PNG sans quantization
+    pdf_custom_dpi: int = 150                    # DPI custom pour PDF
 
 
 # ──────────────────────────────────────────────
@@ -58,9 +59,9 @@ class CompressionSettings:
 # ──────────────────────────────────────────────
 
 PDF_LEVELS = {
-    "high":   {"dpi": 200, "quality": 85},
-    "medium": {"dpi": 150, "quality": 70},
-    "low":    {"dpi": 100, "quality": 50},
+    "high":   {"dpi": 180, "quality": 80},
+    "medium": {"dpi": 130, "quality": 60},
+    "low":    {"dpi": 100, "quality": 30},
 }
 
 JPEG_LEVELS = {
@@ -84,6 +85,215 @@ WEBP_LEVELS = {
 SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
 ZIP_EXTENSIONS = {".zip"}
 MAX_ZIP_EXTRACT_MB = 2048  # Limite d'extraction ZIP : 2 GB
+
+# Taille du crop pour estimation rapide (pixels)
+ESTIMATE_CROP_SIZE = 512
+
+
+# ──────────────────────────────────────────────
+#  Estimation par sample compression
+# ──────────────────────────────────────────────
+
+def estimate_file(input_path: str, settings: CompressionSettings) -> dict:
+    """Estimation du poids après compression via crop à résolution native.
+
+    Retourne {"estimated_size": int, "ratio": float} ou {"error": str}.
+    Pour les images : crop central à résolution native, compression réelle,
+    extrapolation par ratio de surface.
+    Pour les PDF : compression de la 1ère page, extrapolation par nb pages.
+    """
+    if not os.path.isfile(input_path):
+        return {"error": "Fichier introuvable"}
+
+    fmt = detect_format(input_path)
+    output_format = settings.output_format or fmt
+    orig_size = os.path.getsize(input_path)
+
+    try:
+        if fmt == "pdf":
+            return _estimate_pdf(input_path, settings, orig_size)
+        else:
+            return _estimate_image(input_path, settings, fmt, output_format, orig_size)
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _compress_sample(sample: Image.Image, out_fmt: str, src_fmt: str,
+                     settings: CompressionSettings) -> int:
+    """Compresse un sample et retourne sa taille en bytes."""
+    buf = BytesIO()
+
+    # Convertir le mode si nécessaire
+    has_alpha = sample.mode == "RGBA"
+    if out_fmt in ("jpeg",) and has_alpha:
+        sample = sample.convert("RGB")
+    elif out_fmt in ("jpeg", "webp") and sample.mode not in ("RGB", "RGBA", "L"):
+        sample = sample.convert("RGB")
+
+    if out_fmt == "webp":
+        params = _resolve_quality(settings, WEBP_LEVELS)
+        if settings.lossless:
+            sample.save(buf, "WEBP", lossless=True, method=6)
+        else:
+            sample.save(buf, "WEBP", quality=params["quality"], method=6)
+
+    elif out_fmt == "jpeg" or (out_fmt in ("", None) and src_fmt == "jpeg"):
+        params = _resolve_quality(settings, JPEG_LEVELS)
+        if sample.mode not in ("RGB", "L"):
+            sample = sample.convert("RGB")
+        sample.save(buf, "JPEG", quality=params["quality"], optimize=True,
+                    subsampling=params.get("subsampling", "4:2:0"))
+
+    elif out_fmt == "png" or (out_fmt in ("", None) and src_fmt == "png"):
+        if settings.level == "custom":
+            params = {"colors": 256 if settings.custom_quality < 70 else None}
+        else:
+            params = PNG_LEVELS.get(settings.level, PNG_LEVELS["medium"])
+        colors = params.get("colors")
+        if not settings.lossless and colors:
+            if sample.mode == "RGBA":
+                alpha = sample.split()[3]
+                rgb = sample.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=colors).convert("RGB")
+                rgb.putalpha(alpha)
+                rgb.save(buf, "PNG", optimize=True)
+            elif sample.mode != "P":
+                sample = sample.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=colors)
+                sample.save(buf, "PNG", optimize=True)
+            else:
+                sample.save(buf, "PNG", optimize=True)
+        else:
+            sample.save(buf, "PNG", optimize=True)
+    else:
+        if sample.mode not in ("RGB", "L"):
+            sample = sample.convert("RGB")
+        sample.save(buf, "JPEG", quality=70, optimize=True)
+
+    return buf.tell()
+
+
+def _estimate_image(input_path: str, settings: CompressionSettings,
+                    src_fmt: str, out_fmt: str, orig_size: int) -> dict:
+    """Estimation pour images via crop à résolution native.
+
+    Prend un crop central de l'image à résolution native (pas de downscale),
+    le compresse avec les vrais paramètres, et extrapole par ratio de surface.
+    Si resize est actif, applique le resize d'abord puis prend le crop.
+    """
+    img = Image.open(input_path)
+    try:
+        orig_w, orig_h = img.size
+
+        # Appliquer le resize si demandé
+        if settings.resize_mode != "none":
+            img = _resize_image_v2(img, settings)
+
+        final_w, final_h = img.size
+        final_pixels = final_w * final_h
+
+        # Pour les petites images : compresser directement (pas besoin de crop)
+        crop_size = ESTIMATE_CROP_SIZE
+        if final_w <= crop_size * 1.5 and final_h <= crop_size * 1.5:
+            # Image assez petite pour compresser entièrement
+            compressed_size = _compress_sample(img, out_fmt, src_fmt, settings)
+            compressed_size = min(compressed_size, orig_size)
+            ratio = compressed_size / orig_size if orig_size > 0 else 1
+            return {
+                "estimated_size": compressed_size,
+                "ratio": round(ratio, 4),
+                "final_w": final_w,
+                "final_h": final_h,
+            }
+
+        # Multi-crop à résolution native : centre + 4 coins
+        # Ça donne une moyenne représentative du contenu de toute l'image
+        cw = min(crop_size, final_w)
+        ch = min(crop_size, final_h)
+        margin_x = max(0, final_w - cw)
+        margin_y = max(0, final_h - ch)
+
+        crop_positions = [
+            (final_w // 2 - cw // 2, final_h // 2 - ch // 2),  # centre
+            (0, 0),                                              # haut-gauche
+            (margin_x, 0),                                       # haut-droite
+            (0, margin_y),                                       # bas-gauche
+            (margin_x, margin_y),                                # bas-droite
+        ]
+
+        total_crop_bytes = 0
+        total_crop_pixels = 0
+        for x0, y0 in crop_positions:
+            crop = img.crop((x0, y0, x0 + cw, y0 + ch))
+            crop_compressed = _compress_sample(crop, out_fmt, src_fmt, settings)
+            total_crop_bytes += crop_compressed
+            total_crop_pixels += crop.size[0] * crop.size[1]
+            crop.close()
+
+        # Extrapoler : le bytes/pixel moyen des 5 crops
+        if total_crop_pixels > 0:
+            bytes_per_pixel = total_crop_bytes / total_crop_pixels
+            estimated = int(bytes_per_pixel * final_pixels)
+        else:
+            estimated = orig_size
+
+        # Sécurité : ne jamais estimer plus que l'original
+        estimated = min(estimated, orig_size)
+        ratio = estimated / orig_size if orig_size > 0 else 1
+
+        return {
+            "estimated_size": estimated,
+            "ratio": round(ratio, 4),
+            "final_w": final_w,
+            "final_h": final_h,
+        }
+    finally:
+        img.close()
+
+
+def _estimate_pdf(input_path: str, settings: CompressionSettings, orig_size: int) -> dict:
+    """Estimation pour PDF : compresse la 1ère page, extrapole."""
+    if settings.level == "custom":
+        params = {"dpi": settings.pdf_custom_dpi, "quality": settings.custom_quality}
+    else:
+        params = PDF_LEVELS.get(settings.level, PDF_LEVELS["medium"])
+
+    dpi = params["dpi"]
+    quality = params["quality"]
+
+    src = fitz.open(input_path)
+    try:
+        total_pages = len(src)
+        if total_pages == 0:
+            return {"estimated_size": 0, "ratio": 0}
+
+        # Compresser les N premières pages (max 3) pour un échantillon fiable
+        sample_pages = min(total_pages, 3)
+        dst = fitz.open()
+        for pn in range(sample_pages):
+            sp = src[pn]
+            mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+            pix = sp.get_pixmap(matrix=mat)
+            img_data = pix.tobytes(output="jpeg", jpg_quality=quality)
+            dp = dst.new_page(width=sp.rect.width, height=sp.rect.height)
+            dp.insert_image(sp.rect, stream=img_data)
+
+        buf = BytesIO()
+        dst.save(buf, deflate=True, garbage=4)
+        sample_size = buf.tell()
+        dst.close()
+
+        # Extrapoler
+        per_page = sample_size / sample_pages
+        estimated = int(per_page * total_pages)
+        estimated = min(estimated, orig_size)
+        ratio = estimated / orig_size if orig_size > 0 else 1
+
+        return {
+            "estimated_size": estimated,
+            "ratio": round(ratio, 4),
+            "pages": total_pages,
+        }
+    finally:
+        src.close()
 
 
 # ──────────────────────────────────────────────
@@ -288,7 +498,8 @@ def expand_paths(paths: list) -> tuple[list[str], list[str]]:
 
 def compress_pdf(input_path: str, output_path: str, dpi: int = 150,
                  quality: int = 70, progress_cb: Callable = None,
-                 keep_date: bool = False) -> CompressionResult:
+                 keep_date: bool = False,
+                 target_size_kb: int = None) -> CompressionResult:
     if not os.path.isfile(input_path):
         raise FileNotFoundError(f"Fichier introuvable: {input_path}")
 
@@ -301,6 +512,34 @@ def compress_pdf(input_path: str, output_path: str, dpi: int = 150,
         src = fitz.open(input_path)
         dst = fitz.open()
         total_pages = len(src)
+
+        # Target size : binary search sur la qualite JPEG des pages
+        if target_size_kb:
+            lo, hi = 10, 95
+            best_q = quality
+            # Tester sur les N premieres pages pour limiter le cout
+            test_pages = min(total_pages, 5)
+            ratio = total_pages / test_pages if test_pages > 0 else 1
+            for _ in range(12):
+                q = (lo + hi) // 2
+                test_dst = fitz.open()
+                for pn in range(test_pages):
+                    sp = src[pn]
+                    mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+                    pix = sp.get_pixmap(matrix=mat)
+                    d = pix.tobytes(output="jpeg", jpg_quality=q)
+                    dp = test_dst.new_page(width=sp.rect.width, height=sp.rect.height)
+                    dp.insert_image(sp.rect, stream=d)
+                buf = BytesIO()
+                test_dst.save(buf, deflate=True, garbage=4)
+                test_dst.close()
+                estimated_kb = (buf.tell() / 1024) * ratio
+                if estimated_kb <= target_size_kb:
+                    best_q = q
+                    lo = q + 1
+                else:
+                    hi = q - 1
+            quality = best_q
 
         for pn in range(total_pages):
             sp = src[pn]
@@ -356,6 +595,25 @@ def compress_jpeg(input_path: str, output_path: str, quality: int = 70,
         elif max_resolution:
             img = _resize_image(img, max_resolution)
 
+        # Target size : binary search sur la qualite
+        target_size_kb = settings.target_size_kb if settings else None
+        if target_size_kb:
+            lo, hi = 10, 95
+            best_q = quality
+            for _ in range(15):
+                q = (lo + hi) // 2
+                buf = BytesIO()
+                kw_test = {"quality": q, "optimize": True, "subsampling": subsampling}
+                if exif and not strip_metadata:
+                    kw_test["exif"] = exif
+                img.save(buf, "JPEG", **kw_test)
+                if buf.tell() / 1024 <= target_size_kb:
+                    best_q = q
+                    lo = q + 1
+                else:
+                    hi = q - 1
+            quality = best_q
+
         kw = {"quality": quality, "optimize": True, "subsampling": subsampling}
         if exif and not strip_metadata:
             kw["exif"] = exif
@@ -394,6 +652,32 @@ def compress_png(input_path: str, output_path: str, colors: int = None,
         # Strip metadata
         if strip_metadata:
             img.info = {}
+
+        # Target size : binary search sur le nombre de couleurs
+        target_size_kb = settings.target_size_kb if settings else None
+        if target_size_kb and not lossless:
+            lo, hi = 32, 256
+            best_colors = colors or 256
+            for _ in range(10):
+                c = (lo + hi) // 2
+                buf = BytesIO()
+                test_img = img.copy()
+                if test_img.mode == "RGBA":
+                    alpha = test_img.split()[3]
+                    rgb = test_img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=c).convert("RGB")
+                    rgb.putalpha(alpha)
+                    rgb.save(buf, "PNG", optimize=True)
+                elif test_img.mode != "P":
+                    test_img = test_img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=c)
+                    test_img.save(buf, "PNG", optimize=True)
+                else:
+                    test_img.save(buf, "PNG", optimize=True)
+                if buf.tell() / 1024 <= target_size_kb:
+                    best_colors = c
+                    lo = c + 1
+                else:
+                    hi = c - 1
+            colors = best_colors
 
         # Lossless = pas de quantization, meme en mode medium/low
         if not lossless and colors:
@@ -512,7 +796,7 @@ def compress_file(input_path: str, settings: CompressionSettings,
 
     elif fmt == "pdf":
         if settings.level == "custom":
-            params = {"dpi": 150, "quality": settings.custom_quality}
+            params = {"dpi": settings.pdf_custom_dpi, "quality": settings.custom_quality}
         else:
             params = PDF_LEVELS.get(settings.level, PDF_LEVELS["medium"])
         result = compress_pdf(
@@ -521,6 +805,7 @@ def compress_file(input_path: str, settings: CompressionSettings,
             quality=params["quality"],
             progress_cb=progress_cb,
             keep_date=settings.keep_date,
+            target_size_kb=settings.target_size_kb,
         )
 
     elif fmt == "jpeg":

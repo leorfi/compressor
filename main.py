@@ -12,19 +12,24 @@ import time
 import subprocess
 import shutil
 import base64
+from datetime import datetime
 from io import BytesIO
 
 import webview
-from flask import Flask, request, jsonify, render_template, Response
+from flask import Flask, request, jsonify, render_template, Response, send_file
 
 import config  # Charge .env et expose les constantes
 from compressor import (
-    compress_file, detect_format, expand_paths,
+    compress_file, detect_format, expand_paths, estimate_file,
     CompressionSettings, SUPPORTED_EXTENSIONS,
 )
 from history import (
     add_entry, get_history, clear_history,
     get_stats, load_settings, save_settings,
+    load_presets, save_presets, validate_preset_settings, generate_preset_id,
+    load_users, save_users, create_user, verify_user, update_user, delete_user,
+    load_session, save_session, set_active_user, get_active_user_id,
+    migrate_to_default_user,
 )
 
 # ──────────────────────────────────────────────
@@ -43,8 +48,8 @@ logger = logging.getLogger(__name__)
 
 app = Flask(
     __name__,
-    template_folder=os.path.join(os.path.dirname(__file__), "templates"),
-    static_folder=os.path.join(os.path.dirname(__file__), "static"),
+    template_folder=os.path.join(config.APP_DIR, "templates"),
+    static_folder=os.path.join(config.APP_DIR, "static"),
 )
 
 # ──────────────────────────────────────────────
@@ -143,7 +148,7 @@ def api_expand():
 
 @app.route("/api/file-sizes", methods=["POST"])
 def api_file_sizes():
-    """Retourne la taille de chaque fichier (pour l'estimation qualite)."""
+    """Retourne la taille et dimensions de chaque fichier."""
     data = request.json or {}
     paths = data.get("paths", [])
     if not isinstance(paths, list):
@@ -151,10 +156,10 @@ def api_file_sizes():
     if len(paths) > 1000:
         return jsonify({"error": "Trop de chemins (max 1000)"}), 400
     sizes = {}
+    dimensions = {}
     for p in paths:
         if not isinstance(p, str):
             continue
-        # Restriction aux extensions supportées uniquement
         ext = os.path.splitext(p)[1].lower()
         if ext not in SUPPORTED_EXTENSIONS:
             continue
@@ -164,7 +169,133 @@ def api_file_sizes():
                 sizes[p] = os.path.getsize(safe)
             except OSError:
                 sizes[p] = 0
-    return jsonify({"sizes": sizes})
+            # Get dimensions for images
+            try:
+                if ext in {".jpg", ".jpeg", ".png", ".webp"}:
+                    from PIL import Image
+                    with Image.open(safe) as img:
+                        dimensions[p] = {"w": img.width, "h": img.height}
+                elif ext == ".pdf":
+                    import fitz
+                    doc = fitz.open(safe)
+                    if len(doc) > 0:
+                        page = doc[0]
+                        dimensions[p] = {
+                            "w": int(page.rect.width),
+                            "h": int(page.rect.height),
+                            "pages": len(doc),
+                        }
+                    doc.close()
+            except Exception:
+                pass
+    return jsonify({"sizes": sizes, "dimensions": dimensions})
+
+
+@app.route("/api/estimate", methods=["POST"])
+def api_estimate():
+    """Estimation temps réel par sample compression.
+
+    Reçoit la liste de fichiers + settings, retourne une estimation
+    par fichier et par niveau (high/medium/low/custom).
+    """
+    data = request.json or {}
+    paths = data.get("paths", [])
+    s = data.get("settings", {})
+
+    if not isinstance(paths, list) or len(paths) == 0:
+        return jsonify({"error": "paths requis"}), 400
+    if len(paths) > 100:
+        return jsonify({"error": "Trop de fichiers (max 100)"}), 400
+
+    # Paramètres communs
+    out_fmt = s.get("output_format") or None
+    if out_fmt and out_fmt not in ("jpeg", "png", "webp", "pdf"):
+        out_fmt = None
+
+    resize_mode = s.get("resize_mode", "none")
+    if resize_mode not in ("none", "percent", "width", "height", "fit", "exact"):
+        resize_mode = "none"
+
+    resize_width = None
+    if s.get("resize_width"):
+        try:
+            resize_width = max(1, min(10000, int(s["resize_width"])))
+        except (ValueError, TypeError):
+            resize_width = None
+
+    resize_height = None
+    if s.get("resize_height"):
+        try:
+            resize_height = max(1, min(10000, int(s["resize_height"])))
+        except (ValueError, TypeError):
+            resize_height = None
+
+    resize_percent = 100
+    if s.get("resize_percent"):
+        try:
+            resize_percent = max(1, min(100, int(s["resize_percent"])))
+        except (ValueError, TypeError):
+            resize_percent = 100
+
+    lossless = bool(s.get("lossless", False))
+
+    custom_q = max(1, min(100, int(s.get("custom_quality", 70))))
+    pdf_custom_dpi = 150
+    if s.get("pdf_custom_dpi"):
+        try:
+            pdf_custom_dpi = max(36, min(600, int(s["pdf_custom_dpi"])))
+        except (ValueError, TypeError):
+            pdf_custom_dpi = 150
+    pdf_custom_quality = custom_q
+    if s.get("pdf_custom_quality"):
+        try:
+            pdf_custom_quality = max(1, min(100, int(s["pdf_custom_quality"])))
+        except (ValueError, TypeError):
+            pdf_custom_quality = custom_q
+
+    strip_metadata = bool(s.get("strip_metadata", False))
+
+    # Estimer pour chaque niveau
+    levels_to_estimate = ["high", "medium", "low", "custom"]
+    results = {}
+
+    for path in paths:
+        if not isinstance(path, str) or not os.path.isfile(path):
+            continue
+
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            continue
+
+        file_estimates = {}
+        for level in levels_to_estimate:
+            settings = CompressionSettings(
+                level=level,
+                custom_quality=pdf_custom_quality if (out_fmt == "pdf" and level == "custom") else custom_q,
+                pdf_custom_dpi=pdf_custom_dpi,
+                output_format=out_fmt,
+                resize_mode=resize_mode,
+                resize_width=resize_width,
+                resize_height=resize_height,
+                resize_percent=resize_percent,
+                strip_metadata=strip_metadata,
+                lossless=lossless,
+            )
+            est = estimate_file(path, settings)
+            file_estimates[level] = est
+
+        results[path] = file_estimates
+
+    # Agrégation : totaux par niveau
+    totals = {}
+    for level in levels_to_estimate:
+        total = 0
+        for path, ests in results.items():
+            if level in ests and "estimated_size" in ests[level]:
+                total += ests[level]["estimated_size"]
+        totals[level] = total
+
+    return jsonify({"estimates": results, "totals": totals})
 
 
 @app.route("/api/compress", methods=["POST"])
@@ -242,10 +373,27 @@ def api_compress():
     suffix = re.sub(r'[^a-zA-Z0-9_\-. ]', '', raw_suffix)
     keep_date = bool(s.get("keep_date", False))
     lossless = bool(s.get("lossless", False))
+    pdf_multi_level = bool(s.get("pdf_multi_level", False))
+
+    # PDF custom DPI + quality
+    pdf_custom_dpi = 150
+    if s.get("pdf_custom_dpi"):
+        try:
+            pdf_custom_dpi = max(36, min(600, int(s["pdf_custom_dpi"])))
+        except (ValueError, TypeError):
+            pdf_custom_dpi = 150
+
+    pdf_custom_quality = custom_q
+    if s.get("pdf_custom_quality"):
+        try:
+            pdf_custom_quality = max(1, min(100, int(s["pdf_custom_quality"])))
+        except (ValueError, TypeError):
+            pdf_custom_quality = custom_q
 
     settings = CompressionSettings(
         level=level,
-        custom_quality=custom_q,
+        custom_quality=pdf_custom_quality if (out_fmt == "pdf" and level == "custom") else custom_q,
+        pdf_custom_dpi=pdf_custom_dpi,
         max_resolution=max_res,
         output_format=out_fmt,
         target_size_kb=target_kb,
@@ -264,32 +412,106 @@ def api_compress():
         state.compression_active = True
         try:
             results = []
-            total = len(files)
 
-            for i, fpath in enumerate(files):
-                fname = os.path.basename(fpath)
-                _broadcast({"type": "file_start", "index": i, "total": total, "filename": fname})
-                try:
-                    def page_cb(page, total_pages, _i=i):
+            if pdf_multi_level:
+                # ── PDF multi-level: 3 compressions per file ──
+                from compressor import PDF_LEVELS
+                levels = ["high", "medium", "low"]
+                total = len(files) * 3
+                global_index = 0
+
+                for parent_idx, fpath in enumerate(files):
+                    fname = os.path.basename(fpath)
+                    ext = os.path.splitext(fpath)[1].lower()
+
+                    if ext != ".pdf":
                         _broadcast({
-                            "type": "page_progress",
-                            "file_index": _i, "page": page, "total_pages": total_pages,
+                            "type": "file_error", "index": global_index,
+                            "parent_index": parent_idx,
+                            "filename": fname, "error": "Pas un PDF",
                         })
+                        global_index += 3  # skip 3 slots
+                        continue
 
-                    result = compress_file(fpath, settings, progress_cb=page_cb)
-                    result.level = settings.level
-                    add_entry(result.to_dict())
-                    results.append(result.to_dict())
-                    _broadcast({"type": "file_done", "index": i, "total": total, "result": result.to_dict()})
-                except Exception as e:
-                    logger.exception("Erreur compression: %s", fpath)
-                    _broadcast({"type": "file_error", "index": i, "filename": fname, "error": str(e)})
+                    for lvl in levels:
+                        lvl_suffix = f"{suffix}_{lvl}" if suffix else f"_{lvl}"
+                        lvl_settings = CompressionSettings(
+                            level=lvl,
+                            custom_quality=custom_q,
+                            max_resolution=max_res,
+                            output_format="pdf",
+                            target_size_kb=None,
+                            output_dir=output_dir,
+                            resize_mode="none",
+                            resize_width=None,
+                            resize_height=None,
+                            resize_percent=100,
+                            strip_metadata=strip_metadata,
+                            suffix=lvl_suffix,
+                            keep_date=keep_date,
+                            lossless=False,
+                        )
+                        _broadcast({
+                            "type": "file_start", "index": global_index, "total": total,
+                            "parent_index": parent_idx, "sub_level": lvl,
+                            "filename": fname,
+                        })
+                        try:
+                            def page_cb(page, total_pages, _gi=global_index, _pi=parent_idx):
+                                _broadcast({
+                                    "type": "page_progress",
+                                    "file_index": _gi, "parent_index": _pi,
+                                    "page": page, "total_pages": total_pages,
+                                })
+
+                            result = compress_file(fpath, lvl_settings, progress_cb=page_cb)
+                            result.level = lvl
+                            add_entry(result.to_dict())
+                            results.append(result.to_dict())
+                            _broadcast({
+                                "type": "file_done", "index": global_index, "total": total,
+                                "parent_index": parent_idx, "sub_level": lvl,
+                                "result": result.to_dict(),
+                            })
+                        except Exception as e:
+                            logger.exception("Erreur compression PDF %s [%s]: %s", fname, lvl, e)
+                            _broadcast({
+                                "type": "file_error", "index": global_index,
+                                "parent_index": parent_idx, "sub_level": lvl,
+                                "filename": fname, "error": str(e),
+                            })
+                        global_index += 1
+            else:
+                # ── Standard single compression ──
+                total = len(files)
+                for i, fpath in enumerate(files):
+                    fname = os.path.basename(fpath)
+                    _broadcast({"type": "file_start", "index": i, "total": total, "filename": fname})
+                    try:
+                        def page_cb(page, total_pages, _i=i):
+                            _broadcast({
+                                "type": "page_progress",
+                                "file_index": _i, "page": page, "total_pages": total_pages,
+                            })
+
+                        result = compress_file(fpath, settings, progress_cb=page_cb)
+                        result.level = settings.level
+                        add_entry(result.to_dict())
+                        results.append(result.to_dict())
+                        _broadcast({"type": "file_done", "index": i, "total": total, "result": result.to_dict()})
+                    except Exception as e:
+                        logger.exception("Erreur compression: %s", fpath)
+                        _broadcast({"type": "file_error", "index": i, "filename": fname, "error": str(e)})
 
             # Summary
             total_orig = sum(r["original_size"] for r in results)
             total_comp = sum(r["compressed_size"] for r in results)
             saved_mb = (total_orig - total_comp) / 1048576
-            _broadcast({"type": "batch_done", "count": len(results), "saved_mb": round(saved_mb, 1)})
+            # Determine output directory from first result
+            batch_output_dir = None
+            if results:
+                batch_output_dir = os.path.dirname(results[0].get("output_path", ""))
+            _broadcast({"type": "batch_done", "count": len(results), "saved_mb": round(saved_mb, 1), "output_dir": batch_output_dir})
             _notify(
                 "Compression terminee",
                 f"{len(results)} fichier(s) — {saved_mb:.1f} MB economises",
@@ -352,6 +574,17 @@ def api_clear_history():
     return jsonify({"ok": True})
 
 
+@app.route("/api/open-folder", methods=["POST"])
+def api_open_folder():
+    data = request.get_json(silent=True) or {}
+    folder = data.get("path")
+    if not folder or not os.path.isdir(folder):
+        return jsonify({"error": "Dossier introuvable"}), 400
+    import subprocess
+    subprocess.Popen(["open", folder])
+    return jsonify({"ok": True})
+
+
 @app.route("/api/settings", methods=["GET"])
 def api_get_settings():
     return jsonify(load_settings())
@@ -364,6 +597,301 @@ def api_save_settings():
 
 
 # ──────────────────────────────────────────────
+#  Presets API
+# ──────────────────────────────────────────────
+
+@app.route("/api/presets", methods=["GET"])
+def api_get_presets():
+    return jsonify(load_presets())
+
+
+@app.route("/api/presets", methods=["POST"])
+def api_create_preset():
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name", "")).strip()
+    if not name:
+        return jsonify({"error": "Nom requis"}), 400
+    category = body.get("category") or None
+    settings = validate_preset_settings(body.get("settings", {}))
+
+    data = load_presets()
+    preset = {
+        "id": generate_preset_id(),
+        "name": name,
+        "category": category,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "settings": settings,
+    }
+    data["presets"].append(preset)
+    data["active_preset_id"] = preset["id"]
+    save_presets(data)
+    return jsonify({"ok": True, "preset": preset})
+
+
+@app.route("/api/presets/<preset_id>", methods=["PUT"])
+def api_update_preset(preset_id):
+    body = request.get_json(silent=True) or {}
+    data = load_presets()
+    preset = next((p for p in data["presets"] if p["id"] == preset_id), None)
+    if not preset:
+        return jsonify({"error": "Preset introuvable"}), 404
+
+    if "name" in body:
+        name = str(body["name"]).strip()
+        if name:
+            preset["name"] = name
+    if "category" in body:
+        preset["category"] = body["category"] or None
+    if "settings" in body:
+        preset["settings"] = validate_preset_settings(body["settings"])
+    preset["updated_at"] = datetime.now().isoformat()
+
+    save_presets(data)
+    return jsonify({"ok": True, "preset": preset})
+
+
+@app.route("/api/presets/<preset_id>", methods=["DELETE"])
+def api_delete_preset(preset_id):
+    data = load_presets()
+    data["presets"] = [p for p in data["presets"] if p["id"] != preset_id]
+    if data["active_preset_id"] == preset_id:
+        data["active_preset_id"] = None
+    save_presets(data)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/presets/active", methods=["POST"])
+def api_set_active_preset():
+    body = request.get_json(silent=True) or {}
+    data = load_presets()
+    data["active_preset_id"] = body.get("id") or None
+    save_presets(data)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/presets/categories", methods=["POST"])
+def api_add_category():
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name", "")).strip()
+    if not name:
+        return jsonify({"error": "Nom requis"}), 400
+    data = load_presets()
+    if name not in data["categories"]:
+        data["categories"].append(name)
+        save_presets(data)
+    return jsonify({"ok": True, "categories": data["categories"]})
+
+
+@app.route("/api/presets/categories/delete", methods=["POST"])
+def api_delete_category():
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name", "")).strip()
+    if not name:
+        return jsonify({"error": "Nom requis"}), 400
+    data = load_presets()
+    if name not in data["categories"]:
+        return jsonify({"error": "Categorie introuvable"}), 404
+    data["categories"].remove(name)
+    # Reassign presets from this category to null
+    for p in data["presets"]:
+        if p.get("category") == name:
+            p["category"] = None
+    save_presets(data)
+    return jsonify({"ok": True, "categories": data["categories"]})
+
+
+@app.route("/api/presets/categories/rename", methods=["POST"])
+def api_rename_category():
+    body = request.get_json(silent=True) or {}
+    old_name = str(body.get("old_name", "")).strip()
+    new_name = str(body.get("new_name", "")).strip()
+    if not old_name or not new_name:
+        return jsonify({"error": "Ancien et nouveau nom requis"}), 400
+    data = load_presets()
+    if old_name not in data["categories"]:
+        return jsonify({"error": "Categorie introuvable"}), 404
+    if new_name in data["categories"] and new_name != old_name:
+        return jsonify({"error": "Cette categorie existe deja"}), 409
+    # Rename in categories list
+    idx = data["categories"].index(old_name)
+    data["categories"][idx] = new_name
+    # Update all presets referencing old name
+    for p in data["presets"]:
+        if p.get("category") == old_name:
+            p["category"] = new_name
+    save_presets(data)
+    return jsonify({"ok": True, "categories": data["categories"]})
+
+
+# ──────────────────────────────────────────────
+#  User API
+# ──────────────────────────────────────────────
+
+@app.route("/api/users/status", methods=["GET"])
+def api_user_status():
+    data = load_users()
+    has_users = len(data.get("users", [])) > 0
+    active_id = get_active_user_id()
+    active_user = None
+    if active_id:
+        u = next((u for u in data["users"] if u["id"] == active_id), None)
+        if u:
+            active_user = {k: v for k, v in u.items() if k != "password_hash"}
+    return jsonify({"has_users": has_users, "active_user": active_user})
+
+
+@app.route("/api/users", methods=["GET"])
+def api_get_users():
+    data = load_users()
+    users = [{k: v for k, v in u.items() if k != "password_hash"} for u in data.get("users", [])]
+    return jsonify({"users": users, "active_user_id": get_active_user_id()})
+
+
+@app.route("/api/users", methods=["POST"])
+def api_create_user():
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name", "")).strip()
+    password = str(body.get("password", ""))
+    if not name:
+        return jsonify({"error": "Nom requis"}), 400
+    if len(name) > 30:
+        return jsonify({"error": "Nom trop long (max 30)"}), 400
+    if len(password) < 4:
+        return jsonify({"error": "Mot de passe trop court (min 4 caracteres)"}), 400
+    if len(password) > 100:
+        return jsonify({"error": "Mot de passe trop long"}), 400
+
+    user = create_user(name, password)
+    set_active_user(user["id"])
+    save_session({"active_user_id": user["id"]})
+    safe_user = {k: v for k, v in user.items() if k != "password_hash"}
+    return jsonify({"ok": True, "user": safe_user})
+
+
+@app.route("/api/users/login", methods=["POST"])
+def api_login():
+    body = request.get_json(silent=True) or {}
+    user_id = str(body.get("user_id", ""))
+    password = str(body.get("password", ""))
+
+    if not verify_user(user_id, password):
+        return jsonify({"error": "Mot de passe incorrect"}), 401
+
+    set_active_user(user_id)
+    save_session({"active_user_id": user_id})
+
+    data = load_users()
+    user = next((u for u in data["users"] if u["id"] == user_id), None)
+    safe_user = {k: v for k, v in user.items() if k != "password_hash"} if user else None
+    must_change = user.get("must_change_password", False) if user else False
+    return jsonify({"ok": True, "user": safe_user, "must_change_password": must_change})
+
+
+@app.route("/api/users/logout", methods=["POST"])
+def api_logout():
+    set_active_user(None)
+    save_session({"active_user_id": None})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/users/<user_id>", methods=["PUT"])
+def api_update_user(user_id):
+    body = request.get_json(silent=True) or {}
+    current_pw = str(body.get("current_password", ""))
+    if not verify_user(user_id, current_pw):
+        return jsonify({"error": "Mot de passe actuel incorrect"}), 401
+
+    name = body.get("name")
+    new_password = body.get("new_password")
+    user = update_user(user_id, name=name, password=new_password)
+    if not user:
+        return jsonify({"error": "Utilisateur introuvable"}), 404
+
+    safe_user = {k: v for k, v in user.items() if k != "password_hash"}
+    return jsonify({"ok": True, "user": safe_user})
+
+
+@app.route("/api/users/<user_id>", methods=["DELETE"])
+def api_delete_user(user_id):
+    body = request.get_json(silent=True) or {}
+    password = str(body.get("password", ""))
+
+    if not verify_user(user_id, password):
+        return jsonify({"error": "Mot de passe incorrect"}), 401
+
+    delete_user(user_id)
+
+    if get_active_user_id() == user_id:
+        set_active_user(None)
+        save_session({"active_user_id": None})
+
+    return jsonify({"ok": True})
+
+
+# ──────────────────────────────────────────────
+#  Presets Import/Export
+# ──────────────────────────────────────────────
+
+@app.route("/api/presets/import", methods=["POST"])
+def api_import_presets():
+    body = request.get_json(silent=True) or {}
+    import_presets = body.get("presets", [])
+    if not isinstance(import_presets, list) or not import_presets:
+        return jsonify({"error": "Aucun preset a importer"}), 400
+
+    data = load_presets()
+    existing_names = {p["name"] for p in data["presets"]}
+    imported = 0
+    for p in import_presets:
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        settings = validate_preset_settings(p.get("settings", {}))
+        name = str(p["name"]).strip()
+        # Deduplicate names
+        final_name = name
+        counter = 2
+        while final_name in existing_names:
+            final_name = f"{name} ({counter})"
+            counter += 1
+        category = p.get("category") or None
+        if category and category not in data["categories"]:
+            data["categories"].append(category)
+        preset = {
+            "id": generate_preset_id(),
+            "name": final_name,
+            "category": category,
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+            "settings": settings,
+        }
+        data["presets"].append(preset)
+        existing_names.add(final_name)
+        imported += 1
+
+    save_presets(data)
+    return jsonify({"ok": True, "imported": imported})
+
+
+@app.route("/api/presets/export", methods=["POST"])
+def api_export_presets():
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids")
+    data = load_presets()
+    if ids:
+        presets = [p for p in data["presets"] if p["id"] in ids]
+    else:
+        presets = data["presets"]
+    export_data = {
+        "app": "compressor",
+        "version": 1,
+        "exported_at": datetime.now().isoformat(),
+        "presets": presets,
+    }
+    return jsonify(export_data)
+
+
+# ──────────────────────────────────────────────
 #  App version & Updates
 # ──────────────────────────────────────────────
 
@@ -372,68 +900,217 @@ def api_app_version():
     return jsonify({"version": _read_version()})
 
 
+def _github_api_request(path: str):
+    """Fait une requete a l'API GitHub avec token si dispo (repo prive)."""
+    import urllib.request
+    url = f"https://api.github.com/repos/{config.GITHUB_REPO}/{path}"
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if config.GITHUB_TOKEN:
+        headers["Authorization"] = f"token {config.GITHUB_TOKEN}"
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+
+def _github_download_asset(asset_url: str, dest_path: str):
+    """Telecharge un asset GitHub (gere l'auth pour repos prives)."""
+    import urllib.request
+    headers = {"Accept": "application/octet-stream"}
+    if config.GITHUB_TOKEN:
+        headers["Authorization"] = f"token {config.GITHUB_TOKEN}"
+    req = urllib.request.Request(asset_url, headers=headers)
+    with urllib.request.urlopen(req, timeout=300) as resp:
+        with open(dest_path, "wb") as f:
+            while True:
+                chunk = resp.read(8192)
+                if not chunk:
+                    break
+                f.write(chunk)
+
+
+# Cache la derniere release pour eviter de re-fetcher entre check et apply
+_latest_release_cache = {}
+
+
 @app.route("/api/updates/check")
 def api_updates_check():
-    """Vérifie les mises à jour via git fetch --tags."""
-    try:
-        # Vérifier que c'est un repo git
-        result = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=APP_DIR, capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode != 0:
-            return jsonify({"error": "Pas un depot git", "update_available": False})
+    """Verifie les mises a jour — GitHub Releases (bundle) ou git tags (dev)."""
+    current_version = _read_version()
 
-        # Fetch les tags distants
-        fetch = subprocess.run(
-            ["git", "fetch", "--tags", "--quiet"],
-            cwd=APP_DIR, capture_output=True, text=True, timeout=30,
-        )
-        if fetch.returncode != 0:
-            logger.warning("git fetch --tags failed: %s", fetch.stderr)
-            return jsonify({"error": "Impossible de contacter le serveur", "update_available": False})
+    if config.IS_BUNDLED:
+        try:
+            release = _github_api_request("releases/latest")
+            _latest_release_cache.clear()
+            _latest_release_cache.update(release)
 
-        # Récupérer le dernier tag (trié par version)
-        tags = subprocess.run(
-            ["git", "tag", "--sort=-v:refname"],
-            cwd=APP_DIR, capture_output=True, text=True, timeout=5,
-        )
-        tag_list = [t.strip() for t in tags.stdout.strip().split("\n") if t.strip()]
-        if not tag_list:
-            return jsonify({"error": "Aucun tag trouve", "update_available": False})
+            latest_version = release.get("tag_name", "").lstrip("v")
+            update_available = _parse_version(latest_version) > _parse_version(current_version)
+            changelog = release.get("body", "")
 
-        latest_tag = tag_list[0]
-        latest_version = latest_tag.lstrip("v")
-        current_version = _read_version()
-
-        update_available = _parse_version(latest_version) > _parse_version(current_version)
-
-        # Récupérer le message du tag (changelog)
-        changelog = ""
-        if update_available:
-            msg = subprocess.run(
-                ["git", "tag", "-l", "--format=%(contents)", latest_tag],
+            return jsonify({
+                "current_version": current_version,
+                "latest_version": latest_version,
+                "update_available": update_available,
+                "changelog": changelog,
+                "is_bundled": True,
+            })
+        except Exception as e:
+            logger.exception("Erreur check updates (bundle)")
+            return jsonify({"error": str(e), "update_available": False})
+    else:
+        # Mode dev : check via git tags
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
                 cwd=APP_DIR, capture_output=True, text=True, timeout=5,
             )
-            changelog = msg.stdout.strip()
+            if result.returncode != 0:
+                return jsonify({"error": "Pas un depot git", "update_available": False})
 
-        return jsonify({
-            "current_version": current_version,
-            "latest_version": latest_version,
-            "latest_tag": latest_tag,
-            "update_available": update_available,
-            "changelog": changelog,
-        })
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "Timeout lors de la verification", "update_available": False})
-    except Exception as e:
-        logger.exception("Erreur check updates")
-        return jsonify({"error": str(e), "update_available": False})
+            fetch = subprocess.run(
+                ["git", "fetch", "--tags", "--quiet"],
+                cwd=APP_DIR, capture_output=True, text=True, timeout=30,
+            )
+            if fetch.returncode != 0:
+                logger.warning("git fetch --tags failed: %s", fetch.stderr)
+                return jsonify({"error": "Impossible de contacter le serveur", "update_available": False})
+
+            tags = subprocess.run(
+                ["git", "tag", "--sort=-v:refname"],
+                cwd=APP_DIR, capture_output=True, text=True, timeout=5,
+            )
+            tag_list = [t.strip() for t in tags.stdout.strip().split("\n") if t.strip()]
+            if not tag_list:
+                return jsonify({"error": "Aucun tag trouve", "update_available": False})
+
+            latest_tag = tag_list[0]
+            latest_version = latest_tag.lstrip("v")
+            update_available = _parse_version(latest_version) > _parse_version(current_version)
+
+            changelog = ""
+            if update_available:
+                msg = subprocess.run(
+                    ["git", "tag", "-l", "--format=%(contents)", latest_tag],
+                    cwd=APP_DIR, capture_output=True, text=True, timeout=5,
+                )
+                changelog = msg.stdout.strip()
+
+            return jsonify({
+                "current_version": current_version,
+                "latest_version": latest_version,
+                "latest_tag": latest_tag,
+                "update_available": update_available,
+                "changelog": changelog,
+                "is_bundled": False,
+            })
+        except subprocess.TimeoutExpired:
+            return jsonify({"error": "Timeout lors de la verification", "update_available": False})
+        except Exception as e:
+            logger.exception("Erreur check updates")
+            return jsonify({"error": str(e), "update_available": False})
 
 
 @app.route("/api/updates/apply", methods=["POST"])
 def api_updates_apply():
-    """Applique la mise à jour via git pull --ff-only."""
+    """Applique la mise a jour — auto-replace (bundle) ou git pull (dev)."""
+    if config.IS_BUNDLED:
+        import tempfile
+        tmp_dir = None
+        mount_point = None
+
+        try:
+            # Trouver l'asset DMG dans le cache de la derniere release
+            release = _latest_release_cache
+            if not release:
+                return jsonify({"ok": False, "error": "Verifiez d'abord les mises a jour"}), 400
+
+            asset_url = None
+            asset_name = "Compressor-update.dmg"
+            for asset in release.get("assets", []):
+                if asset.get("name", "").endswith(".dmg"):
+                    asset_url = asset.get("url")  # API URL (pas browser URL)
+                    asset_name = asset["name"]
+                    break
+            if not asset_url:
+                return jsonify({"ok": False, "error": "Aucun DMG dans cette release"}), 400
+
+            # Trouver le .app actuel
+            app_bundle = os.path.realpath(sys.executable)
+            while app_bundle and not app_bundle.endswith(".app"):
+                app_bundle = os.path.dirname(app_bundle)
+            if not app_bundle or not os.path.isdir(app_bundle):
+                return jsonify({"ok": False, "error": "Impossible de localiser l'application"}), 500
+
+            logger.info("App bundle: %s", app_bundle)
+
+            # Telecharger le DMG via l'API GitHub (authentifie)
+            tmp_dir = tempfile.mkdtemp(prefix="compressor-update-")
+            dmg_path = os.path.join(tmp_dir, asset_name)
+            logger.info("Telechargement: %s", asset_url)
+            _github_download_asset(asset_url, dmg_path)
+
+            # Monter le DMG
+            mount_result = subprocess.run(
+                ["hdiutil", "attach", dmg_path, "-nobrowse", "-quiet"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if mount_result.returncode != 0:
+                return jsonify({"ok": False, "error": "Impossible de monter le DMG"}), 500
+
+            mount_point = None
+            for line in mount_result.stdout.strip().split("\n"):
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    mount_point = parts[-1].strip()
+            if not mount_point:
+                return jsonify({"ok": False, "error": "Point de montage introuvable"}), 500
+
+            # Trouver le .app dans le DMG
+            new_app = None
+            for item in os.listdir(mount_point):
+                if item.endswith(".app"):
+                    new_app = os.path.join(mount_point, item)
+                    break
+            if not new_app:
+                return jsonify({"ok": False, "error": "Aucune app dans le DMG"}), 500
+
+            # Remplacer avec backup + rollback
+            old_backup = app_bundle + ".old"
+            if os.path.exists(old_backup):
+                shutil.rmtree(old_backup, ignore_errors=True)
+            os.rename(app_bundle, old_backup)
+            try:
+                shutil.copytree(new_app, app_bundle)
+                logger.info("App remplacee avec succes")
+            except Exception:
+                # Rollback
+                if not os.path.exists(app_bundle) and os.path.exists(old_backup):
+                    os.rename(old_backup, app_bundle)
+                raise
+            shutil.rmtree(old_backup, ignore_errors=True)
+
+            # Demonter + cleanup + relancer
+            subprocess.run(["hdiutil", "detach", mount_point, "-quiet"], timeout=10)
+            mount_point = None
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            tmp_dir = None
+
+            subprocess.Popen(["open", app_bundle])
+
+            return jsonify({
+                "ok": True,
+                "message": "Mise a jour installee. Redemarrage...",
+                "restarting": True,
+            })
+        except Exception as e:
+            logger.exception("Erreur mise a jour bundle")
+            # Cleanup en cas d'erreur
+            if mount_point:
+                subprocess.run(["hdiutil", "detach", mount_point, "-quiet"], timeout=10)
+            if tmp_dir and os.path.isdir(tmp_dir):
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            return jsonify({"ok": False, "error": str(e)}), 500
+
     try:
         result = subprocess.run(
             ["git", "pull", "--ff-only"],
@@ -493,7 +1170,7 @@ def api_preview():
             doc = fitz.open(path)
             try:
                 page = doc[0]
-                pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 img_bytes = pix.tobytes(output="png")
             finally:
                 doc.close()
@@ -501,10 +1178,14 @@ def api_preview():
             from PIL import Image
             img = Image.open(path)
             try:
-                img.thumbnail((600, 600))
+                img.thumbnail((1600, 1600), Image.LANCZOS)
                 buf = BytesIO()
                 fmt = "PNG" if img.mode == "RGBA" else "JPEG"
-                img.save(buf, format=fmt)
+                save_kwargs = {"format": fmt}
+                if fmt == "JPEG":
+                    save_kwargs["quality"] = 95
+                    save_kwargs["subsampling"] = 0  # 4:4:4
+                img.save(buf, **save_kwargs)
                 img_bytes = buf.getvalue()
             finally:
                 img.close()
@@ -524,6 +1205,124 @@ def api_preview():
     except Exception as e:
         logger.exception("Erreur preview")
         return jsonify({"error": str(e)}), 500
+
+
+# ──────────────────────────────────────────────
+#  Serve files in full quality (no downscaling)
+# ──────────────────────────────────────────────
+
+_SERVE_MIME = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".webp": "image/webp",
+}
+
+
+@app.route("/api/serve")
+def api_serve():
+    """Serve an image/PDF file in full original quality."""
+    path = request.args.get("path", "")
+    if not path or not os.path.isfile(path):
+        return Response(status=404)
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        return Response(status=400)
+
+    real = os.path.realpath(path)
+
+    if ext == ".pdf":
+        import fitz
+        doc = fitz.open(real)
+        try:
+            page = doc[0]
+            pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0))
+            img_bytes = pix.tobytes(output="png")
+        finally:
+            doc.close()
+        return Response(
+            img_bytes, mimetype="image/png",
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
+    return send_file(
+        real,
+        mimetype=_SERVE_MIME.get(ext, "application/octet-stream"),
+    )
+
+
+# ──────────────────────────────────────────────
+#  Thumbnail API (cache memoire)
+# ──────────────────────────────────────────────
+
+_thumb_cache = {}
+_THUMB_CACHE_MAX = 200
+
+
+@app.route("/api/thumbnail")
+def api_thumbnail():
+    """Genere et retourne un thumbnail pour un fichier (image ou PDF)."""
+    path = request.args.get("path", "")
+    size = request.args.get("size", 128, type=int)
+    size = max(32, min(512, size))
+
+    if not path or not os.path.isfile(path):
+        return Response(status=404)
+
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        return Response(status=400)
+
+    real = os.path.realpath(path)
+
+    try:
+        mtime = os.path.getmtime(real)
+        cache_key = f"{real}:{mtime}:{size}"
+    except OSError:
+        return Response(status=400)
+
+    if cache_key in _thumb_cache:
+        img_bytes, content_type = _thumb_cache[cache_key]
+        return Response(img_bytes, mimetype=content_type,
+                        headers={"Cache-Control": "private, max-age=300"})
+
+    try:
+        if ext == ".pdf":
+            import fitz
+            doc = fitz.open(real)
+            try:
+                page = doc[0]
+                zoom = size / max(page.rect.width, page.rect.height)
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat)
+                img_bytes = pix.tobytes(output="png")
+                content_type = "image/png"
+            finally:
+                doc.close()
+        else:
+            from PIL import Image
+            img = Image.open(real)
+            try:
+                img.thumbnail((size, size), Image.LANCZOS)
+                buf = BytesIO()
+                fmt = "PNG" if img.mode == "RGBA" else "JPEG"
+                content_type = f"image/{fmt.lower()}"
+                img.save(buf, format=fmt, quality=92)
+                img_bytes = buf.getvalue()
+            finally:
+                img.close()
+
+        # Evict oldest if cache full
+        if len(_thumb_cache) >= _THUMB_CACHE_MAX:
+            oldest_key = next(iter(_thumb_cache))
+            del _thumb_cache[oldest_key]
+        _thumb_cache[cache_key] = (img_bytes, content_type)
+
+        return Response(img_bytes, mimetype=content_type,
+                        headers={"Cache-Control": "private, max-age=300"})
+
+    except Exception as e:
+        logger.warning("Thumbnail error for %s: %s", path, e)
+        return Response(status=500)
 
 
 # ──────────────────────────────────────────────
@@ -547,6 +1346,43 @@ class Api:
     def choose_folder(self):
         result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
         return result[0] if result else None
+
+    def choose_preset_file(self):
+        """Dialog natif pour ouvrir un fichier JSON de presets."""
+        result = webview.windows[0].create_file_dialog(
+            webview.OPEN_DIALOG,
+            allow_multiple=False,
+            file_types=("Fichiers JSON (*.json)",),
+        )
+        if not result:
+            return None
+        path = result[0] if isinstance(result, (list, tuple)) else result
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning("Error reading preset file %s: %s", path, e)
+            return None
+
+    def save_preset_file(self, json_data):
+        """Dialog natif pour sauvegarder un fichier JSON de presets."""
+        result = webview.windows[0].create_file_dialog(
+            webview.SAVE_DIALOG,
+            save_filename="compressor-presets.json",
+            file_types=("Fichiers JSON (*.json)",),
+        )
+        if not result:
+            return False
+        path = result if isinstance(result, str) else result[0]
+        if not path.endswith(".json"):
+            path += ".json"
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            return True
+        except Exception as e:
+            logger.warning("Error writing preset file %s: %s", path, e)
+            return False
 
     def get_drop_paths(self):
         """Lit les chemins de fichiers depuis le pasteboard macOS natif (drag & drop)."""
@@ -602,6 +1438,14 @@ def _set_dock_icon():
 
 
 def start_app():
+    # Migration + session restore
+    migrate_to_default_user()
+    session_data = load_session()
+    if session_data.get("active_user_id"):
+        users_data = load_users()
+        if any(u["id"] == session_data["active_user_id"] for u in users_data.get("users", [])):
+            set_active_user(session_data["active_user_id"])
+
     port = find_port()
     api = Api()
 
