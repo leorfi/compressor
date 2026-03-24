@@ -38,6 +38,9 @@ const state = {
     // Folder drop
     sourceRootDir: null,  // root dir when a folder is dropped
     formatPresetMap: {},  // {jpeg: "preset_id", png: "preset_id", ...} — per-format presets
+    // Folder bacs (sortie produits)
+    folderBacs: {},       // { "folderName": { renameTemplate, presetId, fileCount } }
+    activeBac: null,      // filtre par bac (null = tous)
 };
 
 // ── Init ──────────────────────────────────
@@ -58,6 +61,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupZoom();
     setupOpenFolderButton();
     setupRenameTemplate();
+    document.getElementById("bacs-import-csv").addEventListener("click", importBacsCSV);
     setupPresets();
     setupQuickPresets();
     setupPresetsModal();
@@ -239,6 +243,11 @@ async function addFiles(paths) {
             showFormatConfigModal(formats);
         }
     }
+
+    // Construire les bacs si sous-dossiers detectes
+    if (state.sourceRootDir && newPaths.length > 0) {
+        buildFolderBacs();
+    }
 }
 
 function removeFile(index) {
@@ -255,6 +264,8 @@ function clearFiles() {
     state.formatFilter = null;
     state.formatPresetMap = {};
     state.sourceRootDir = null;
+    state.folderBacs = {};
+    state.activeBac = null;
     state.lastOutputDir = null;
     hideOpenFolderButton();
     renderFiles();
@@ -346,6 +357,201 @@ function cleanFilename(name) {
     // Minuscules
     cleaned = cleaned.toLowerCase();
     return cleaned || "image";
+}
+
+
+// ── Folder Bacs (Sortie Produits) ────────
+
+function buildFolderBacs() {
+    const bacs = {};
+    for (const f of state.files) {
+        if (!f.relativePath || !f.relativePath.includes("/")) continue;
+        const folder = f.relativePath.split("/")[0];
+        if (!bacs[folder]) {
+            bacs[folder] = {
+                renameTemplate: "",
+                presetId: null,
+                fileCount: 0,
+            };
+        }
+        bacs[folder].fileCount++;
+    }
+
+    // Garder les configs existantes (si on ajoute des fichiers)
+    for (const [name, bac] of Object.entries(bacs)) {
+        if (state.folderBacs[name]) {
+            bac.renameTemplate = state.folderBacs[name].renameTemplate;
+            bac.presetId = state.folderBacs[name].presetId;
+        }
+    }
+
+    state.folderBacs = bacs;
+
+    // Afficher seulement si 2+ sous-dossiers
+    if (Object.keys(bacs).length >= 2) {
+        renderFolderBacs();
+    } else {
+        document.getElementById("folder-bacs").classList.add("hidden");
+    }
+}
+
+function renderFolderBacs() {
+    const container = document.getElementById("folder-bacs");
+    const list = document.getElementById("folder-bacs-list");
+    container.classList.remove("hidden");
+
+    list.innerHTML = Object.entries(state.folderBacs).map(([name, bac]) => {
+        const isActive = state.activeBac === name;
+        const presetName = bac.presetId
+            ? (state.presets.find(p => p.id === bac.presetId)?.name || "?")
+            : "Reglages globaux";
+        const ruleDisplay = bac.renameTemplate || "Nom original";
+
+        return `
+            <div class="folder-bac ${isActive ? 'active' : ''}" data-folder="${escapeHtml(name)}">
+                <div class="folder-bac__info">
+                    <span class="folder-bac__name">${escapeHtml(name)}</span>
+                    <span class="folder-bac__count">${bac.fileCount}</span>
+                </div>
+                <div class="folder-bac__config">
+                    <span class="folder-bac__rule" title="${escapeHtml(ruleDisplay)}">${escapeHtml(ruleDisplay)}</span>
+                    <span class="folder-bac__preset">${escapeHtml(presetName)}</span>
+                </div>
+                <button class="folder-bac__edit btn--icon" data-folder="${escapeHtml(name)}" title="Modifier">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                        <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                </button>
+            </div>
+        `;
+    }).join("");
+
+    // Clic sur bac = filtre
+    list.querySelectorAll(".folder-bac").forEach(el => {
+        el.addEventListener("click", (e) => {
+            if (e.target.closest(".folder-bac__edit")) return; // ignore edit click
+            const folder = el.dataset.folder;
+            state.activeBac = state.activeBac === folder ? null : folder;
+            renderFolderBacs();
+            renderFiles();
+        });
+    });
+
+    // Clic crayon = edition inline
+    list.querySelectorAll(".folder-bac__edit").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            editBac(btn.dataset.folder);
+        });
+    });
+}
+
+function editBac(folderName) {
+    const bac = state.folderBacs[folderName];
+    if (!bac) return;
+
+    const presetOptions = state.presets.map(p =>
+        `<option value="${p.id}" ${p.id === bac.presetId ? 'selected' : ''}>${escapeHtml(p.name)}</option>`
+    ).join("");
+
+    // Remplacer le bac par un formulaire inline
+    const bacEl = document.querySelector(`.folder-bac[data-folder="${CSS.escape(folderName)}"]`);
+    if (!bacEl) return;
+
+    bacEl.innerHTML = `
+        <div class="folder-bac__edit-form">
+            <div class="field" style="flex:1;margin:0">
+                <input type="text" class="field__input field__input--sm" id="bac-edit-template"
+                       value="${escapeHtml(bac.renameTemplate)}" placeholder="Ex: #SP-NL-{index}">
+            </div>
+            <select class="field__select field__select--sm" id="bac-edit-preset" style="width:140px">
+                <option value="">Reglages globaux</option>
+                ${presetOptions}
+            </select>
+            <button class="btn btn--tonal btn--sm" id="bac-edit-ok">OK</button>
+            <button class="btn btn--text btn--sm" id="bac-edit-cancel">Annuler</button>
+        </div>
+    `;
+
+    const templateInput = document.getElementById("bac-edit-template");
+    templateInput.focus();
+    templateInput.select();
+
+    document.getElementById("bac-edit-ok").addEventListener("click", () => {
+        bac.renameTemplate = templateInput.value.trim();
+        bac.presetId = document.getElementById("bac-edit-preset").value || null;
+        renderFolderBacs();
+    });
+
+    document.getElementById("bac-edit-cancel").addEventListener("click", () => {
+        renderFolderBacs();
+    });
+
+    templateInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            bac.renameTemplate = templateInput.value.trim();
+            bac.presetId = document.getElementById("bac-edit-preset").value || null;
+            renderFolderBacs();
+        }
+        if (e.key === "Escape") renderFolderBacs();
+    });
+}
+
+function importBacsCSV() {
+    // Utiliser pywebview file dialog
+    if (window.pywebview && window.pywebview.api && window.pywebview.api.open_file_dialog) {
+        window.pywebview.api.open_file_dialog("csv").then(paths => {
+            if (!paths || paths.length === 0) return;
+            fetch("/api/read-file", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: paths[0] }),
+            }).then(r => r.json()).then(data => {
+                if (!data.content) return;
+                parseBacsCSV(data.content);
+            });
+        });
+    } else {
+        // Fallback : input file
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".csv,.txt";
+        input.addEventListener("change", () => {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => parseBacsCSV(e.target.result);
+            reader.readAsText(file);
+        });
+        input.click();
+    }
+}
+
+function parseBacsCSV(content) {
+    const lines = content.split("\n").filter(l => l.trim());
+    let matched = 0;
+
+    for (const line of lines) {
+        const parts = line.split(";").map(s => s.trim());
+        if (parts.length < 2) continue;
+
+        const folderName = parts[0];
+        const template = parts[1];
+        const presetName = parts[2] || null;
+
+        if (state.folderBacs[folderName]) {
+            state.folderBacs[folderName].renameTemplate = template;
+            if (presetName) {
+                const preset = state.presets.find(p => p.name.toLowerCase() === presetName.toLowerCase());
+                if (preset) state.folderBacs[folderName].presetId = preset.id;
+            }
+            matched++;
+        }
+    }
+
+    renderFolderBacs();
+    showSnackbar(`${matched} dossier(s) configure(s) depuis le CSV`);
 }
 
 
@@ -460,9 +666,16 @@ function renderFiles() {
     renderFormatFilters(formatCounts);
 
     // Filtrer les fichiers selon le filtre actif
-    const filtered = state.formatFilter
-        ? state.files.filter(f => (f.format || "").toLowerCase() === state.formatFilter)
-        : state.files;
+    let filtered = state.files;
+    if (state.formatFilter) {
+        filtered = filtered.filter(f => (f.format || "").toLowerCase() === state.formatFilter);
+    }
+    if (state.activeBac) {
+        filtered = filtered.filter(f => {
+            if (!f.relativePath) return false;
+            return f.relativePath.split("/")[0] === state.activeBac;
+        });
+    }
 
     // Valider que le filtre est encore pertinent
     if (state.formatFilter && !formatCounts[state.formatFilter]) {
@@ -1394,6 +1607,23 @@ async function startCompression() {
         }
         if (Object.keys(formatSettings).length > 0) {
             compressPayload.format_settings = formatSettings;
+        }
+    }
+    // Per-folder bac settings
+    if (Object.keys(state.folderBacs).length > 0) {
+        const folderSettings = {};
+        for (const [folder, bac] of Object.entries(state.folderBacs)) {
+            if (!bac.renameTemplate && !bac.presetId) continue;
+            const entry = {};
+            if (bac.renameTemplate) entry.rename_template = bac.renameTemplate;
+            if (bac.presetId) {
+                const preset = state.presets.find(p => p.id === bac.presetId);
+                if (preset) entry.preset_settings = preset.settings;
+            }
+            folderSettings[folder] = entry;
+        }
+        if (Object.keys(folderSettings).length > 0) {
+            compressPayload.folder_settings = folderSettings;
         }
     }
     try {

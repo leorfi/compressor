@@ -2093,6 +2093,119 @@ body {
 .compare-filename--after { right: 0; text-align: right; }
 
 
+/* ── Folder Bacs ──────────────────────── */
+
+.folder-bacs {
+    padding: 12px 16px;
+    background: var(--md-sys-color-surface-container, #211F26);
+    border-bottom: 1px solid var(--md-sys-color-outline-variant);
+}
+
+.folder-bacs__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.folder-bacs__title {
+    font: 600 13px/16px var(--md-typescale-body-medium-font, 'Roboto', sans-serif);
+    color: var(--md-sys-color-on-surface);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.folder-bacs__list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.folder-bac {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--md-sys-color-outline-variant);
+    background: var(--md-sys-color-surface-container-high, #36343B);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    min-width: 180px;
+}
+
+.folder-bac:hover {
+    background: rgba(208, 188, 255, 0.08);
+}
+
+.folder-bac.active {
+    border-color: var(--md-sys-color-primary);
+    background: rgba(208, 188, 255, 0.12);
+}
+
+.folder-bac__info {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.folder-bac__name {
+    font: 600 13px/16px var(--md-typescale-body-medium-font, 'Roboto', sans-serif);
+    color: var(--md-sys-color-on-surface);
+}
+
+.folder-bac__count {
+    font: 400 11px/14px var(--md-typescale-body-medium-font, 'Roboto', sans-serif);
+    color: var(--md-sys-color-on-surface-variant);
+    background: rgba(255,255,255,0.06);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+
+.folder-bac__config {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+}
+
+.folder-bac__rule {
+    font: 400 11px/14px 'SF Mono', 'Menlo', monospace;
+    color: var(--md-sys-color-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 140px;
+}
+
+.folder-bac__preset {
+    font: 400 10px/14px var(--md-typescale-body-medium-font, 'Roboto', sans-serif);
+    color: var(--md-sys-color-on-surface-variant);
+    background: rgba(208, 188, 255, 0.1);
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.folder-bac__edit {
+    flex-shrink: 0;
+    padding: 4px;
+    color: var(--md-sys-color-on-surface-variant);
+}
+
+.folder-bac__edit:hover {
+    color: var(--md-sys-color-primary);
+}
+
+.folder-bac__edit-form {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+}
+
+
 /* ── Rename Template ──────────────────── */
 
 .rename-tags {

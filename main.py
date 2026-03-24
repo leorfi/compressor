@@ -474,6 +474,18 @@ def api_compress():
     rename_template = str(s.get("rename_template", ""))[:100]
     rename_clean = bool(s.get("rename_clean", True))
 
+    # Folder bac settings (per-folder rename + preset)
+    raw_folder_settings = data.get("folder_settings", {})
+    folder_settings_map = {}  # { "Accessoires": { rename_template, preset_settings } }
+    if isinstance(raw_folder_settings, dict):
+        for folder_name, fs in raw_folder_settings.items():
+            if not isinstance(fs, dict):
+                continue
+            folder_settings_map[folder_name] = {
+                "rename_template": str(fs.get("rename_template", ""))[:100],
+                "preset_settings": fs.get("preset_settings"),
+            }
+
     # Source root dir pour export structure
     source_root_dir = data.get("source_root_dir") or None
     if source_root_dir:
@@ -621,11 +633,46 @@ def api_compress():
             else:
                 # ── Standard single compression ──
                 total = len(files)
+                folder_index_counters = {}  # Per-folder index for rename
                 for i, fpath in enumerate(files):
                     fname = os.path.basename(fpath)
                     # Choisir les settings selon le format du fichier
                     file_fmt = detect_format(fpath)
                     file_settings = format_settings_map.get(file_fmt, settings)
+
+                    # Per-folder bac: override rename_template + settings
+                    file_folder = None
+                    file_rename_template = rename_template
+                    if source_root_dir:
+                        rel = os.path.relpath(fpath, source_root_dir)
+                        parts = rel.split(os.sep)
+                        if len(parts) > 1:
+                            file_folder = parts[0]
+                    if file_folder and file_folder in folder_settings_map:
+                        fs = folder_settings_map[file_folder]
+                        if fs.get("rename_template"):
+                            file_rename_template = fs["rename_template"]
+                        if fs.get("preset_settings"):
+                            # Build per-folder settings (same logic as format_settings_map)
+                            ps = fs["preset_settings"]
+                            from compressor import CompressionSettings as CS
+                            file_settings = CS(
+                                level=ps.get("level", file_settings.level),
+                                custom_quality=max(1, min(100, int(ps.get("custom_quality", file_settings.custom_quality)))),
+                                max_resolution=file_settings.max_resolution,
+                                output_format=ps.get("output_format") or file_settings.output_format,
+                                target_size_kb=ps.get("target_size_kb", file_settings.target_size_kb),
+                                output_dir=file_settings.output_dir,
+                                resize_mode=ps.get("resize_mode", file_settings.resize_mode),
+                                resize_width=ps.get("resize_width", file_settings.resize_width),
+                                resize_height=ps.get("resize_height", file_settings.resize_height),
+                                resize_percent=ps.get("resize_percent", file_settings.resize_percent),
+                                strip_metadata=ps.get("strip_metadata", file_settings.strip_metadata),
+                                suffix=ps.get("suffix", file_settings.suffix) or "",
+                                keep_date=ps.get("keep_date", file_settings.keep_date),
+                                lossless=ps.get("lossless", file_settings.lossless),
+                                source_root_dir=file_settings.source_root_dir,
+                            )
 
                     _broadcast({"type": "file_start", "index": i, "total": total, "filename": fname})
                     try:
@@ -639,9 +686,16 @@ def api_compress():
                         result.level = file_settings.level
 
                         # Renommage par lot
-                        if rename_template and result.output_path and os.path.isfile(result.output_path):
+                        if file_rename_template and result.output_path and os.path.isfile(result.output_path):
+                            # Per-folder index (reset par dossier)
+                            folder_key = file_folder or "__global__"
+                            if folder_key not in folder_index_counters:
+                                folder_index_counters[folder_key] = 0
+                            file_index = folder_index_counters[folder_key]
+                            folder_index_counters[folder_key] += 1
+
                             new_name = _apply_rename_template(
-                                rename_template, fpath, i, total,
+                                file_rename_template, fpath, file_index, total,
                                 result.output_path, rename_clean
                             )
                             if new_name:
