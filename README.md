@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.0.0-D0BCFF?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-3.0.2-D0BCFF?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey?style=flat-square" alt="macOS">
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
@@ -214,6 +214,11 @@ Les utilisateurs recevront la notification de mise a jour dans l'app.
 ---
 
 ## Changelog
+
+### v3.0.2 (2026-03-24)
+- Bandeau de mise a jour visible au lancement de l'app
+- Fix SSL certificates pour auto-update dans le bundle macOS
+- Fix thumbnails PNG mode palette (P/PA)
 
 ### v3.0.0 (2026-03-24)
 - Compression PNG optimisee via **pngquant** + **oxipng** (jusqu'a -95%)
