@@ -2,6 +2,7 @@
 """Configuration de l'application — lit .env si présent, sinon valeurs par défaut."""
 
 import os
+import ssl
 import sys
 
 IS_BUNDLED = getattr(sys, '_MEIPASS', False)
@@ -10,6 +11,19 @@ if IS_BUNDLED:
     APP_DIR = sys._MEIPASS
 else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Fix SSL certificates pour PyInstaller (macOS bundle)
+# Sans ça, les requêtes HTTPS (GitHub API, updates) échouent avec SSL_CERT_VERIFY_FAILED
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+except ImportError:
+    # Fallback : utiliser les certs système macOS
+    _macos_certs = "/etc/ssl/cert.pem"
+    if os.path.isfile(_macos_certs):
+        os.environ.setdefault("SSL_CERT_FILE", _macos_certs)
+        os.environ.setdefault("REQUESTS_CA_BUNDLE", _macos_certs)
 ENV_FILE = os.path.join(APP_DIR, ".env")
 
 

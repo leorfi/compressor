@@ -25,6 +25,7 @@ a = Analysis(
         "PIL.WebPImagePlugin",
         "fitz",
         "fitz.fitz",
+        "certifi",
         "bottle",
         "AppKit",
         "Foundation",
