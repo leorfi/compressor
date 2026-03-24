@@ -1997,6 +1997,14 @@ function setupUpdateModal() {
     });
 
     document.getElementById("apply-update-btn").addEventListener("click", applyUpdate);
+
+    // Update banner
+    document.getElementById("update-banner-btn").addEventListener("click", () => {
+        openModal("update-modal");
+    });
+    document.getElementById("update-banner-close").addEventListener("click", () => {
+        document.getElementById("update-banner").classList.add("hidden");
+    });
 }
 
 async function loadAppVersion() {
@@ -2056,6 +2064,12 @@ async function checkForUpdates(silent) {
             } else {
                 changelogDiv.classList.add("hidden");
             }
+
+            // Afficher le bandeau en haut de l'app
+            const banner = document.getElementById("update-banner");
+            document.getElementById("update-banner-text").textContent =
+                `Mise a jour v${data.latest_version} disponible`;
+            banner.classList.remove("hidden");
 
             if (!silent) {
                 openModal("update-modal");
