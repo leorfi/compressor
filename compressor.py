@@ -3,6 +3,7 @@
 
 import os
 import shutil
+import subprocess
 import time
 import tempfile
 import zipfile
@@ -52,6 +53,7 @@ class CompressionSettings:
     keep_date: bool = False                    # True = copier mtime de l'original
     lossless: bool = False                     # True = WebP lossless / PNG sans quantization
     pdf_custom_dpi: int = 150                    # DPI custom pour PDF
+    source_root_dir: Optional[str] = None        # Dossier racine pour export structure
 
 
 # ──────────────────────────────────────────────
@@ -66,14 +68,14 @@ PDF_LEVELS = {
 
 JPEG_LEVELS = {
     "high":   {"quality": 85, "subsampling": "4:4:4"},
-    "medium": {"quality": 70, "subsampling": "4:2:0"},
-    "low":    {"quality": 50, "subsampling": "4:2:0"},
+    "medium": {"quality": 60, "subsampling": "4:2:0"},
+    "low":    {"quality": 35, "subsampling": "4:2:0"},
 }
 
 PNG_LEVELS = {
-    "high":   {"colors": None},
-    "medium": {"colors": 256},
-    "low":    {"colors": 128},
+    "high":   {"colors": None, "pngquant": False},       # oxipng only (lossless)
+    "medium": {"colors": 256, "pngquant": True},          # pngquant 256 + oxipng
+    "low":    {"colors": 64, "pngquant": True},            # pngquant 64 + oxipng
 }
 
 WEBP_LEVELS = {
@@ -82,7 +84,7 @@ WEBP_LEVELS = {
     "low":    {"quality": 50},
 }
 
-SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp"}
+SUPPORTED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".svg", ".tif", ".tiff"}
 ZIP_EXTENSIONS = {".zip"}
 MAX_ZIP_EXTRACT_MB = 2048  # Limite d'extraction ZIP : 2 GB
 
@@ -110,7 +112,10 @@ def estimate_file(input_path: str, settings: CompressionSettings) -> dict:
     orig_size = os.path.getsize(input_path)
 
     try:
-        if fmt == "pdf":
+        if fmt == "svg":
+            # SVG = pass-through, pas d'estimation
+            return {"estimated_size": orig_size, "ratio": 1.0}
+        elif fmt == "pdf":
             return _estimate_pdf(input_path, settings, orig_size)
         else:
             return _estimate_image(input_path, settings, fmt, output_format, orig_size)
@@ -146,11 +151,28 @@ def _compress_sample(sample: Image.Image, out_fmt: str, src_fmt: str,
 
     elif out_fmt == "png" or (out_fmt in ("", None) and src_fmt == "png"):
         if settings.level == "custom":
-            params = {"colors": 256 if settings.custom_quality < 70 else None}
+            params = {"colors": 256 if settings.custom_quality < 70 else None, "pngquant": settings.custom_quality < 70}
         else:
             params = PNG_LEVELS.get(settings.level, PNG_LEVELS["medium"])
         colors = params.get("colors")
-        if not settings.lossless and colors:
+        use_pq = params.get("pngquant", False) and not settings.lossless and _has_tool("pngquant")
+
+        if use_pq and colors:
+            # Estimation précise via pngquant sur le sample
+            tmp_path = os.path.join(tempfile.gettempdir(), f"_pqest_{os.getpid()}.png")
+            try:
+                sample.save(tmp_path, "PNG")
+                cmd = ["pngquant", str(colors), "--force", "--output", tmp_path, "--", tmp_path]
+                subprocess.run(cmd, capture_output=True, timeout=10)
+                with open(tmp_path, "rb") as f:
+                    buf.write(f.read())
+            except Exception:
+                # Fallback Pillow
+                sample.save(buf, "PNG", optimize=True)
+            finally:
+                try: os.unlink(tmp_path)
+                except: pass
+        elif not settings.lossless and colors:
             if sample.mode == "RGBA":
                 alpha = sample.split()[3]
                 rgb = sample.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=colors).convert("RGB")
@@ -193,9 +215,10 @@ def _estimate_image(input_path: str, settings: CompressionSettings,
         # Pour les petites images : compresser directement (pas besoin de crop)
         crop_size = ESTIMATE_CROP_SIZE
         if final_w <= crop_size * 1.5 and final_h <= crop_size * 1.5:
-            # Image assez petite pour compresser entièrement
             compressed_size = _compress_sample(img, out_fmt, src_fmt, settings)
             compressed_size = min(compressed_size, orig_size)
+            if settings.target_size_kb and compressed_size > settings.target_size_kb * 1024:
+                compressed_size = settings.target_size_kb * 1024
             ratio = compressed_size / orig_size if orig_size > 0 else 1
             return {
                 "estimated_size": compressed_size,
@@ -204,39 +227,61 @@ def _estimate_image(input_path: str, settings: CompressionSettings,
                 "final_h": final_h,
             }
 
-        # Multi-crop à résolution native : centre + 4 coins
-        # Ça donne une moyenne représentative du contenu de toute l'image
-        cw = min(crop_size, final_w)
-        ch = min(crop_size, final_h)
-        margin_x = max(0, final_w - cw)
-        margin_y = max(0, final_h - ch)
+        effective_fmt = out_fmt or src_fmt
+        is_png_pq = effective_fmt == "png" and _has_tool("pngquant") and not settings.lossless
 
-        crop_positions = [
-            (final_w // 2 - cw // 2, final_h // 2 - ch // 2),  # centre
-            (0, 0),                                              # haut-gauche
-            (margin_x, 0),                                       # haut-droite
-            (0, margin_y),                                       # bas-gauche
-            (margin_x, margin_y),                                # bas-droite
-        ]
+        if is_png_pq:
+            # PNG + pngquant : thumbnail complet (pas de crops) pour estimation précise
+            # Le crop extrapole mal car le fond transparent compresse beaucoup mieux que le produit
+            EST_SIZE = 800
+            thumb = img.copy()
+            thumb.thumbnail((EST_SIZE, EST_SIZE), Image.LANCZOS)
+            thumb_pixels = thumb.size[0] * thumb.size[1]
+            thumb_compressed = _compress_sample(thumb, out_fmt, src_fmt, settings)
+            thumb.close()
 
-        total_crop_bytes = 0
-        total_crop_pixels = 0
-        for x0, y0 in crop_positions:
-            crop = img.crop((x0, y0, x0 + cw, y0 + ch))
-            crop_compressed = _compress_sample(crop, out_fmt, src_fmt, settings)
-            total_crop_bytes += crop_compressed
-            total_crop_pixels += crop.size[0] * crop.size[1]
-            crop.close()
-
-        # Extrapoler : le bytes/pixel moyen des 5 crops
-        if total_crop_pixels > 0:
-            bytes_per_pixel = total_crop_bytes / total_crop_pixels
-            estimated = int(bytes_per_pixel * final_pixels)
+            if thumb_pixels > 0:
+                bytes_per_pixel = thumb_compressed / thumb_pixels
+                estimated = int(bytes_per_pixel * final_pixels)
+            else:
+                estimated = orig_size
         else:
-            estimated = orig_size
+            # Autres formats : multi-crop à résolution native (5 crops)
+            cw = min(crop_size, final_w)
+            ch = min(crop_size, final_h)
+            margin_x = max(0, final_w - cw)
+            margin_y = max(0, final_h - ch)
+
+            crop_positions = [
+                (final_w // 2 - cw // 2, final_h // 2 - ch // 2),  # centre
+                (0, 0),                                              # haut-gauche
+                (margin_x, 0),                                       # haut-droite
+                (0, margin_y),                                       # bas-gauche
+                (margin_x, margin_y),                                # bas-droite
+            ]
+
+            total_crop_bytes = 0
+            total_crop_pixels = 0
+            for x0, y0 in crop_positions:
+                crop = img.crop((x0, y0, x0 + cw, y0 + ch))
+                crop_compressed = _compress_sample(crop, out_fmt, src_fmt, settings)
+                total_crop_bytes += crop_compressed
+                total_crop_pixels += crop.size[0] * crop.size[1]
+                crop.close()
+
+            if total_crop_pixels > 0:
+                bytes_per_pixel = total_crop_bytes / total_crop_pixels
+                estimated = int(bytes_per_pixel * final_pixels)
+            else:
+                estimated = orig_size
 
         # Sécurité : ne jamais estimer plus que l'original
         estimated = min(estimated, orig_size)
+
+        # Si target_size_kb est défini, l'estimation ne dépasse pas la cible
+        if settings.target_size_kb and estimated > settings.target_size_kb * 1024:
+            estimated = settings.target_size_kb * 1024
+
         ratio = estimated / orig_size if orig_size > 0 else 1
 
         return {
@@ -307,6 +352,8 @@ def detect_format(file_path: str) -> str:
         ".jpg": "jpeg", ".jpeg": "jpeg",
         ".png": "png",
         ".webp": "webp",
+        ".svg": "svg",
+        ".tif": "tiff", ".tiff": "tiff",
     }
     return mapping.get(ext, "unknown")
 
@@ -415,17 +462,27 @@ def _finalize_result(input_path: str, output_path: str, orig_size: int,
 
 
 def _build_output_path(input_path: str, settings: CompressionSettings, ext: Optional[str] = None) -> str:
-    dirname = settings.output_dir or os.path.dirname(input_path)
     basename = os.path.splitext(os.path.basename(input_path))[0]
     if ext is None:
         ext = os.path.splitext(input_path)[1]
     if settings.output_format:
         ext_map = {"jpeg": ".jpg", "png": ".png", "webp": ".webp", "pdf": ".pdf"}
         ext = ext_map.get(settings.output_format, ext)
-    os.makedirs(dirname, exist_ok=True)
+
     suffix = settings.suffix if settings.suffix else ""
-    # Securite : supprimer tout separateur de chemin du suffix
     suffix = suffix.replace("/", "").replace("\\", "").replace("..", "")
+
+    if settings.source_root_dir and not settings.output_dir:
+        # Mode dossier-export : recreer la structure dans [dossier]-export/
+        export_dir = settings.source_root_dir.rstrip("/") + "-export"
+        # Chemin relatif du fichier par rapport au dossier source
+        rel = os.path.relpath(input_path, settings.source_root_dir)
+        rel_dir = os.path.dirname(rel)
+        dirname = os.path.join(export_dir, rel_dir) if rel_dir and rel_dir != "." else export_dir
+    else:
+        dirname = settings.output_dir or os.path.dirname(input_path)
+
+    os.makedirs(dirname, exist_ok=True)
     out = os.path.join(dirname, f"{basename}{suffix}{ext}")
     return out
 
@@ -629,6 +686,11 @@ def compress_jpeg(input_path: str, output_path: str, quality: int = 70,
 #  PNG compression
 # ──────────────────────────────────────────────
 
+def _has_tool(name: str) -> bool:
+    """Check if an external tool is available."""
+    return shutil.which(name) is not None
+
+
 def compress_png(input_path: str, output_path: str, colors: int = None,
                  max_resolution: int = None,
                  settings: CompressionSettings = None) -> CompressionResult:
@@ -640,47 +702,87 @@ def compress_png(input_path: str, output_path: str, colors: int = None,
     strip_metadata = settings.strip_metadata if settings else False
     lossless = settings.lossless if settings else False
     keep_date = settings.keep_date if settings else False
+    use_pngquant = not lossless and colors and _has_tool("pngquant")
+    use_oxipng = _has_tool("oxipng")
+    needs_resize = (settings and settings.resize_mode != "none") or max_resolution
 
-    img = Image.open(input_path)
-    try:
-        # Resize : Phase 2 mode ou compat v1
-        if settings and settings.resize_mode != "none":
-            img = _resize_image_v2(img, settings)
-        elif max_resolution:
-            img = _resize_image(img, max_resolution)
+    # Step 1 : Préparer le fichier source (resize si nécessaire, sinon copie directe)
+    if needs_resize:
+        img = Image.open(input_path)
+        try:
+            if settings and settings.resize_mode != "none":
+                img = _resize_image_v2(img, settings)
+            elif max_resolution:
+                img = _resize_image(img, max_resolution)
+            # Sauvegarder avec le même mode (préserver alpha)
+            img.save(output_path, "PNG")
+        finally:
+            img.close()
+        source_for_pngquant = output_path
+    else:
+        # Copie directe — pas de passage par Pillow = pas d'altération alpha
+        shutil.copy2(input_path, output_path)
+        source_for_pngquant = output_path
 
-        # Strip metadata
-        if strip_metadata:
-            img.info = {}
-
-        # Target size : binary search sur le nombre de couleurs
+    # Step 2 : pngquant (lossy quantization, excellent sur PNG)
+    if use_pngquant:
         target_size_kb = settings.target_size_kb if settings else None
-        if target_size_kb and not lossless:
-            lo, hi = 32, 256
-            best_colors = colors or 256
-            for _ in range(10):
-                c = (lo + hi) // 2
-                buf = BytesIO()
-                test_img = img.copy()
-                if test_img.mode == "RGBA":
-                    alpha = test_img.split()[3]
-                    rgb = test_img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=c).convert("RGB")
-                    rgb.putalpha(alpha)
-                    rgb.save(buf, "PNG", optimize=True)
-                elif test_img.mode != "P":
-                    test_img = test_img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=c)
-                    test_img.save(buf, "PNG", optimize=True)
-                else:
-                    test_img.save(buf, "PNG", optimize=True)
-                if buf.tell() / 1024 <= target_size_kb:
-                    best_colors = c
-                    lo = c + 1
-                else:
-                    hi = c - 1
-            colors = best_colors
 
-        # Lossless = pas de quantization, meme en mode medium/low
-        if not lossless and colors:
+        # Garder une copie du source propre pour la binary search
+        source_backup = output_path + ".src.tmp"
+        shutil.copy2(output_path, source_backup)
+
+        try:
+            if target_size_kb:
+                # Binary search sur le NOMBRE DE COULEURS pour atteindre la taille cible
+                # pngquant: 2-256 couleurs. Moins = plus petit mais moins beau
+                lo, hi = 2, 256  # 2-256 couleurs, l'utilisateur choisit la cible
+                best_colors = colors or 256
+
+                for _ in range(8):
+                    if lo > hi:
+                        break
+                    c = (lo + hi) // 2
+                    shutil.copy2(source_backup, output_path)
+                    cmd = ["pngquant", str(c), "--force",
+                           "--output", output_path, "--", output_path]
+                    r = subprocess.run(cmd, capture_output=True, timeout=30)
+                    if r.returncode != 0:
+                        lo = c + 1
+                        continue
+                    cur_size = os.path.getsize(output_path) / 1024
+                    if cur_size <= target_size_kb:
+                        best_colors = c
+                        lo = c + 1  # Tester plus de couleurs (meilleure qualité)
+                    else:
+                        hi = c - 1  # Moins de couleurs (plus petit)
+
+                # Appliquer le meilleur nombre de couleurs trouvé
+                shutil.copy2(source_backup, output_path)
+                cmd = ["pngquant", str(best_colors), "--force",
+                       "--output", output_path, "--", output_path]
+                subprocess.run(cmd, capture_output=True, timeout=30)
+
+            else:
+                # Qualité fixe basée sur le niveau
+                cmd = ["pngquant", str(colors), "--force",
+                       "--output", output_path, "--", output_path]
+                subprocess.run(cmd, capture_output=True, timeout=30)
+        finally:
+            try: os.unlink(source_backup)
+            except: pass
+
+    # Step 3 : oxipng (optimisation lossless — rapide, toujours bénéfique)
+    if use_oxipng:
+        opt_level = "2"  # Bon compromis vitesse/gain (level 4 est trop lent sur gros PNG)
+        strip_flag = ["--strip", "safe"] if strip_metadata else []
+        cmd = ["oxipng", "-o", opt_level, "--quiet"] + strip_flag + [output_path]
+        subprocess.run(cmd, capture_output=True, timeout=60)
+
+    # Fallback Pillow si pas d'outils externes
+    if not use_pngquant and not use_oxipng and not lossless and colors:
+        img = Image.open(output_path)
+        try:
             if img.mode == "RGBA":
                 alpha = img.split()[3]
                 rgb = img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=colors).convert("RGB")
@@ -689,10 +791,9 @@ def compress_png(input_path: str, output_path: str, colors: int = None,
                 img.putalpha(alpha)
             elif img.mode != "P":
                 img = img.convert("RGB").convert("P", palette=Image.ADAPTIVE, colors=colors)
-
-        img.save(output_path, "PNG", optimize=True)
-    finally:
-        img.close()
+            img.save(output_path, "PNG", optimize=True)
+        finally:
+            img.close()
 
     return _finalize_result(input_path, output_path, orig_size, "png", t0,
                             keep_date=keep_date)
@@ -839,6 +940,46 @@ def compress_file(input_path: str, settings: CompressionSettings,
             max_resolution=settings.max_resolution,
             settings=settings,
         )
+
+    elif fmt == "svg":
+        # SVG : pass-through (copie simple, pas de compression)
+        t0 = time.time()
+        orig_size = os.path.getsize(input_path)
+        shutil.copy2(input_path, output_path)
+        result = _finalize_result(input_path, output_path, orig_size, "svg", t0,
+                                  keep_date=settings.keep_date)
+
+    elif fmt == "tiff":
+        # TIFF : convertir vers le format de sortie demande, ou compresser en TIFF
+        t0 = time.time()
+        orig_size = os.path.getsize(input_path)
+        img = Image.open(input_path)
+        try:
+            if settings and settings.resize_mode != "none":
+                img = _resize_image_v2(img, settings)
+            if settings.output_format and settings.output_format != "tiff":
+                # Conversion vers un autre format
+                if settings.output_format == "jpeg":
+                    if img.mode not in ("RGB", "L"):
+                        img = img.convert("RGB")
+                    params = _resolve_quality(settings, JPEG_LEVELS)
+                    img.save(output_path, "JPEG", quality=params["quality"], optimize=True)
+                elif settings.output_format == "png":
+                    img.save(output_path, "PNG", optimize=True)
+                elif settings.output_format == "webp":
+                    params = _resolve_quality(settings, WEBP_LEVELS)
+                    img.save(output_path, "WEBP", quality=params["quality"], method=6)
+                else:
+                    img.save(output_path, "TIFF", compression="tiff_deflate")
+            else:
+                # Garder en TIFF mais compresser avec deflate
+                if img.mode not in ("RGB", "RGBA", "L"):
+                    img = img.convert("RGB")
+                img.save(output_path, "TIFF", compression="tiff_deflate")
+        finally:
+            img.close()
+        result = _finalize_result(input_path, output_path, orig_size, "tiff", t0,
+                                  keep_date=settings.keep_date)
 
     else:
         raise ValueError(f"Format non supporte: {fmt}")

@@ -16,15 +16,13 @@
         <!-- TOP APP BAR (M3 Small) -->
         <header class="top-app-bar">
             <span class="top-app-bar__title">Compressor</span>
-            <div id="global-progress" class="top-app-bar__progress hidden">
-                <span id="progress-text" class="top-app-bar__progress-text">0 / 0</span>
-                <div class="progress-track"><div id="progress-fill" class="progress-indicator"></div></div>
+            <div id="global-progress" class="progress-bar-container hidden">
+                <div class="progress-bar__inner">
+                    <div class="progress-bar__track"><div id="progress-fill" class="progress-bar__fill"></div></div>
+                    <span id="progress-text" class="progress-bar__text">0 / 0</span>
+                </div>
             </div>
             <div class="top-app-bar__actions">
-                <!-- User Profile -->
-                <button id="user-icon" class="icon-button user-avatar-btn" title="Profil" aria-label="Profil">
-                    <span class="user-avatar" id="user-avatar-initial">?</span>
-                </button>
                 <!-- History -->
                 <button id="history-icon" class="icon-button" title="Historique" aria-label="Historique">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -74,6 +72,7 @@
                 <div id="file-container" class="file-container hidden">
                     <div class="file-container__header">
                         <span id="file-count" class="file-container__count">0 fichier(s)</span>
+                        <div id="format-filters" class="format-filters"></div>
                         <div class="file-container__actions">
                             <!-- View Toggle -->
                             <div class="segmented-button" id="view-toggle">
@@ -109,52 +108,42 @@
                             <svg class="side-sheet__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                         </button>
                         <div class="side-sheet__section-body">
-                            <!-- Category filter -->
-                            <div class="field">
-                                <label class="field__label">Categorie</label>
-                                <select id="preset-category-filter" class="field__select">
-                                    <option value="">Toutes</option>
+                            <!-- Raccourcis rapides -->
+                            <div id="quick-presets" class="quick-presets">
+                                <div id="quick-preset-1" class="quick-preset" data-slot="1" title="Cliquer pour assigner le preset actif">
+                                    <span class="quick-preset__icon">+</span>
+                                    <span class="quick-preset__label">Vide</span>
+                                    <span class="quick-preset__summary"></span>
+                                </div>
+                                <div id="quick-preset-2" class="quick-preset" data-slot="2" title="Cliquer pour assigner le preset actif">
+                                    <span class="quick-preset__icon">+</span>
+                                    <span class="quick-preset__label">Vide</span>
+                                    <span class="quick-preset__summary"></span>
+                                </div>
+                                <div id="quick-preset-3" class="quick-preset" data-slot="3" title="Cliquer pour assigner le preset actif">
+                                    <span class="quick-preset__icon">+</span>
+                                    <span class="quick-preset__label">Vide</span>
+                                    <span class="quick-preset__summary"></span>
+                                </div>
+                            </div>
+                            <!-- Preset actif -->
+                            <div class="preset-selector">
+                                <select id="preset-select" class="field__select">
+                                    <option value="">Aucun preset</option>
                                 </select>
+                                <button id="preset-clear-btn" class="btn--icon btn--icon-clear hidden" title="Retirer le preset">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                                    </svg>
+                                </button>
+                                <button id="preset-save-btn" class="btn--icon" title="Enregistrer comme preset">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                        <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/>
+                                    </svg>
+                                </button>
                             </div>
-                            <!-- Preset selector + save button -->
-                            <div class="field">
-                                <label class="field__label">Preset</label>
-                                <div class="preset-selector">
-                                    <select id="preset-select" class="field__select">
-                                        <option value="">Aucun preset</option>
-                                    </select>
-                                    <button id="preset-clear-btn" class="btn--icon btn--icon-clear hidden" title="Retirer le preset">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                                        </svg>
-                                    </button>
-                                    <button id="preset-save-btn" class="btn--icon" title="Enregistrer le preset">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                                            <circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3" fill="currentColor"/>
-                                        </svg>
-                                    </button>
-                                </div>
-                            </div>
-                            <!-- Save form (hidden by default) -->
-                            <div id="preset-save-form" class="preset-save-form hidden">
-                                <input type="text" id="preset-name" class="field__input field__input--sm" placeholder="Nom du preset">
-                                <div class="preset-category-row">
-                                    <select id="preset-category" class="field__select field__select--sm">
-                                        <option value="">Sans categorie</option>
-                                    </select>
-                                    <button id="preset-add-cat-btn" class="btn--icon btn--icon--sm" title="Nouvelle categorie">
-                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                                    </button>
-                                </div>
-                                <div id="sidebar-add-cat-form" class="preset-add-cat-form hidden">
-                                    <input type="text" id="sidebar-cat-name" class="field__input field__input--sm" placeholder="Nom">
-                                    <button id="sidebar-cat-confirm" class="btn btn--tonal btn--sm">OK</button>
-                                </div>
-                                <div class="preset-save-actions">
-                                    <button id="preset-cancel-btn" class="btn btn--text btn--sm">Annuler</button>
-                                    <button id="preset-confirm-btn" class="btn btn--tonal btn--sm">Enregistrer</button>
-                                </div>
-                            </div>
+                            <!-- Lien vers modal -->
+                            <button id="presets-manage-link" class="preset-manage-link" type="button">Gerer les presets →</button>
                         </div>
                     </div>
 
@@ -543,140 +532,73 @@
         <div class="modal__surface">
             <div class="modal__header">
                 <h3 class="modal__title" id="presets-modal-title">Gestion des presets</h3>
-                <button class="icon-button modal-close-btn" data-modal="presets-modal">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-            </div>
-            <div class="modal__body">
-                <!-- Toolbar -->
-                <div class="preset-modal-toolbar">
-                    <select id="preset-modal-cat-filter" class="field__select field__select--sm">
-                        <option value="">Toutes les categories</option>
-                    </select>
-                    <div class="preset-modal-toolbar__spacer"></div>
+                <div class="modal__header-actions">
                     <button id="preset-modal-import-btn" class="btn btn--tonal btn--sm">Importer</button>
-                    <button id="preset-modal-add-cat-btn" class="btn btn--text btn--sm">+ Categorie</button>
-                    <button id="preset-modal-manage-cat-btn" class="btn btn--text btn--sm">Gerer</button>
+                    <button class="icon-button modal-close-btn" data-modal="presets-modal">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
                 </div>
-                <!-- Add category inline form (hidden) -->
-                <div id="preset-modal-add-cat-form" class="preset-add-cat-form hidden">
-                    <input type="text" id="preset-modal-cat-name" class="field__input field__input--sm" placeholder="Nom de la categorie">
-                    <button id="preset-modal-cat-confirm" class="btn btn--tonal btn--sm">Ajouter</button>
-                    <button id="preset-modal-cat-cancel" class="btn btn--text btn--sm">Annuler</button>
+            </div>
+            <div class="modal__body preset-modal-body">
+                <!-- Save new preset form (shown when coming from sidebar save button) -->
+                <div id="preset-modal-save-form" class="preset-modal-save-form hidden">
+                    <div class="preset-modal-save-form__row">
+                        <input type="text" id="preset-name" class="field__input field__input--sm" placeholder="Nom du preset" style="flex:1">
+                        <select id="preset-category" class="field__select field__select--sm" style="flex:1">
+                            <option value="">Sans categorie</option>
+                        </select>
+                    </div>
+                    <div class="preset-modal-save-form__actions">
+                        <button id="preset-cancel-btn" class="btn btn--text btn--sm">Annuler</button>
+                        <button id="preset-confirm-btn" class="btn btn--filled btn--sm">Enregistrer le preset</button>
+                    </div>
                 </div>
-                <!-- Category management (hidden by default) -->
-                <div id="preset-modal-cat-list" class="preset-cat-list hidden"></div>
-                <!-- Select all + Preset list -->
-                <label id="preset-select-all-row" class="preset-modal-select-all hidden">
-                    <input type="checkbox" id="preset-select-all"> Tout selectionner
-                </label>
-                <div id="preset-modal-empty" class="preset-modal-empty hidden">Aucun preset enregistre</div>
-                <div id="preset-modal-list" class="preset-modal-list"></div>
-                <!-- Footer -->
-                <div id="preset-modal-footer" class="preset-modal-footer hidden">
-                    <button id="preset-modal-export-btn" class="btn btn--tonal btn--sm">Exporter la selection</button>
+                <!-- Scrollable list -->
+                <div class="preset-modal-scroll">
+                    <div id="preset-modal-empty" class="preset-modal-empty hidden">
+                        <p>Aucune categorie ni preset.</p>
+                        <p>Commencez par ajouter une categorie.</p>
+                    </div>
+                    <div id="preset-modal-list" class="preset-modal-list"></div>
+                </div>
+                <!-- Fixed bottom bar -->
+                <div class="preset-modal-bottom">
+                    <div class="preset-modal-bottom__add">
+                        <button id="preset-modal-add-cat-btn" class="btn btn--tonal btn--sm">Ajouter une categorie</button>
+                        <div id="preset-modal-add-cat-form" class="preset-add-cat-form hidden">
+                            <input type="text" id="preset-modal-cat-name" class="field__input field__input--sm" placeholder="Nom de la categorie">
+                            <button id="preset-modal-cat-confirm" class="btn btn--tonal btn--sm">Ajouter</button>
+                            <button id="preset-modal-cat-cancel" class="btn btn--text btn--sm">Annuler</button>
+                        </div>
+                    </div>
+                    <div id="preset-modal-footer" class="preset-modal-footer hidden">
+                        <label class="preset-modal-select-all">
+                            <input type="checkbox" id="preset-select-all"> Tout selectionner
+                        </label>
+                        <button id="preset-modal-export-btn" class="btn btn--tonal btn--sm">Exporter la selection</button>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Login Modal (non-dismissable) -->
-    <div id="login-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="login-modal-title">
-        <div class="modal__scrim"></div>
-        <div class="modal__surface modal__surface--sm modal__surface--login">
-            <div class="modal__header">
-                <h3 class="modal__title" id="login-modal-title">Connexion</h3>
-            </div>
-            <div class="modal__body">
-                <div id="login-user-list" class="login-user-list"></div>
-                <div id="login-password-field" class="field hidden">
-                    <label class="field__label">Mot de passe</label>
-                    <input type="password" id="login-password" class="field__input" placeholder="Mot de passe" autocomplete="off">
-                    <span id="login-error" class="field__error hidden"></span>
-                </div>
-                <div class="login-actions">
-                    <button id="login-btn" class="btn btn--filled btn--full" disabled>Se connecter</button>
-                    <button id="login-create-btn" class="btn btn--text btn--full">Creer un profil</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Create Profile Modal -->
-    <div id="create-profile-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="create-profile-title">
-        <div class="modal__scrim"></div>
+    <!-- Format Config Modal (multi-format folder drop) -->
+    <div id="format-config-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="format-config-title">
+        <div class="modal__scrim" data-modal="format-config-modal"></div>
         <div class="modal__surface modal__surface--sm">
             <div class="modal__header">
-                <h3 class="modal__title" id="create-profile-title">Nouveau profil</h3>
-                <button class="icon-button modal-close-btn" data-modal="create-profile-modal">
+                <h3 class="modal__title" id="format-config-title">Configurer par format</h3>
+                <button class="icon-button modal-close-btn" data-modal="format-config-modal">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
             </div>
             <div class="modal__body">
-                <div class="field">
-                    <label class="field__label">Nom du profil</label>
-                    <input type="text" id="create-profile-name" class="field__input" maxlength="30" placeholder="Ex: Leo">
+                <p class="format-config__desc">Associez un preset a chaque format detecte. Chaque type de fichier sera compresse avec son propre preset.</p>
+                <div id="format-config-list" class="format-config-list"></div>
+                <div class="format-config__actions">
+                    <button id="format-config-skip" class="btn btn--text">Ignorer</button>
+                    <button id="format-config-apply" class="btn btn--filled">Appliquer</button>
                 </div>
-                <div class="field">
-                    <label class="field__label">Mot de passe</label>
-                    <input type="password" id="create-profile-password" class="field__input" placeholder="Mot de passe">
-                </div>
-                <div class="field">
-                    <label class="field__label">Confirmer le mot de passe</label>
-                    <input type="password" id="create-profile-confirm" class="field__input" placeholder="Confirmer">
-                </div>
-                <span id="create-profile-error" class="field__error hidden"></span>
-                <button id="create-profile-btn" class="btn btn--filled btn--full" style="margin-top:8px">Creer le profil</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- User Menu Modal -->
-    <div id="user-menu-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="user-menu-title">
-        <div class="modal__scrim" data-modal="user-menu-modal"></div>
-        <div class="modal__surface modal__surface--sm">
-            <div class="modal__header">
-                <h3 class="modal__title" id="user-menu-title">Profil</h3>
-                <button class="icon-button modal-close-btn" data-modal="user-menu-modal">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-            </div>
-            <div class="modal__body">
-                <div id="user-menu-info" class="user-menu-info"></div>
-                <div class="user-menu-actions">
-                    <button id="user-edit-btn" class="btn btn--tonal btn--full">Modifier le profil</button>
-                    <button id="user-switch-btn" class="btn btn--tonal btn--full">Changer d'utilisateur</button>
-                    <button id="user-delete-btn" class="btn btn--text btn--error btn--full">Supprimer le profil</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Edit Profile Modal -->
-    <div id="edit-profile-modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="edit-profile-title">
-        <div class="modal__scrim" data-modal="edit-profile-modal"></div>
-        <div class="modal__surface modal__surface--sm">
-            <div class="modal__header">
-                <h3 class="modal__title" id="edit-profile-title">Modifier le profil</h3>
-                <button class="icon-button modal-close-btn" data-modal="edit-profile-modal">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-            </div>
-            <div class="modal__body">
-                <div class="field">
-                    <label class="field__label">Nom</label>
-                    <input type="text" id="edit-profile-name" class="field__input" maxlength="30">
-                </div>
-                <div class="field">
-                    <label class="field__label">Mot de passe actuel</label>
-                    <input type="password" id="edit-profile-current-pw" class="field__input" placeholder="Requis">
-                </div>
-                <div class="field">
-                    <label class="field__label">Nouveau mot de passe (optionnel)</label>
-                    <input type="password" id="edit-profile-new-pw" class="field__input" placeholder="Laisser vide pour ne pas changer">
-                </div>
-                <span id="edit-profile-error" class="field__error hidden"></span>
-                <button id="edit-profile-save-btn" class="btn btn--filled btn--full" style="margin-top:8px">Enregistrer</button>
             </div>
         </div>
     </div>

@@ -33,8 +33,11 @@ const state = {
     presets: [],
     categories: [],
     activePresetId: null,
-    // User
-    currentUser: null,
+    // Format filter
+    formatFilter: null,  // null = all, "jpeg", "png", "pdf", "webp"
+    // Folder drop
+    sourceRootDir: null,  // root dir when a folder is dropped
+    formatPresetMap: {},  // {jpeg: "preset_id", png: "preset_id", ...} — per-format presets
 };
 
 // ── Init ──────────────────────────────────
@@ -55,32 +58,42 @@ document.addEventListener("DOMContentLoaded", () => {
     setupZoom();
     setupOpenFolderButton();
     setupPresets();
+    setupQuickPresets();
     setupPresetsModal();
-    setupUserModals();
-    checkUserStatus();
+    setupFormatConfigModal();
+    loadHistory();
+    loadSettings().then(() => loadPresets());
+    loadAppVersion();
 });
 
 // ── Drop Zone & File Selection ────────────
 
 function setupDropZone() {
     const zone = document.getElementById("drop-zone");
+    const fileContainer = document.getElementById("file-container");
     const chooseBtn = document.getElementById("choose-files-btn");
     const addBtn = document.getElementById("add-more-btn");
     const clearBtn = document.getElementById("clear-files-btn");
 
-    document.addEventListener("dragover", (e) => { e.preventDefault(); });
-    document.addEventListener("drop", (e) => { e.preventDefault(); });
-
-    zone.addEventListener("dragover", (e) => {
+    // Drop global — fonctionne partout dans la fenetre (zone vide + liste de fichiers)
+    document.addEventListener("dragover", (e) => {
         e.preventDefault();
-        e.stopPropagation();
-        zone.classList.add("drag-over");
+        if (!zone.classList.contains("hidden")) {
+            zone.classList.add("drag-over");
+        } else if (!fileContainer.classList.contains("hidden")) {
+            fileContainer.classList.add("drag-over");
+        }
     });
-    zone.addEventListener("dragleave", () => zone.classList.remove("drag-over"));
-    zone.addEventListener("drop", (e) => {
+    document.addEventListener("dragleave", (e) => {
+        if (!e.relatedTarget || e.relatedTarget === document.documentElement) {
+            zone.classList.remove("drag-over");
+            fileContainer.classList.remove("drag-over");
+        }
+    });
+    document.addEventListener("drop", (e) => {
         e.preventDefault();
-        e.stopPropagation();
         zone.classList.remove("drag-over");
+        fileContainer.classList.remove("drag-over");
         state.justDropped = true;
         setTimeout(() => { state.justDropped = false; }, DROP_DEBOUNCE_MS);
         handleDrop(e);
@@ -150,6 +163,26 @@ async function addFiles(paths) {
         }
     }
 
+    // Detecter le dossier racine commun (si les fichiers viennent d'un meme dossier)
+    if (paths.length > 1 && !state.sourceRootDir) {
+        const dirs = paths.map(p => {
+            const parts = p.split("/");
+            parts.pop(); // enlever le fichier
+            return parts.join("/");
+        });
+        // Trouver le prefix commun
+        let common = dirs[0] || "";
+        for (const d of dirs) {
+            while (common && !d.startsWith(common)) {
+                common = common.substring(0, common.lastIndexOf("/"));
+            }
+        }
+        if (common && dirs.some(d => d !== common)) {
+            // Il y a des sous-dossiers → c'est un drop de dossier
+            state.sourceRootDir = common;
+        }
+    }
+
     const newPaths = [];
     for (const path of paths) {
         if (state.files.find(f => f.path === path)) continue;
@@ -157,9 +190,17 @@ async function addFiles(paths) {
         const ext = name.split(".").pop().toLowerCase();
         const format = detectFormat(ext);
         if (format === "unknown") continue;
+
+        // Chemin relatif par rapport au dossier source
+        let relativePath = null;
+        if (state.sourceRootDir && path.startsWith(state.sourceRootDir + "/")) {
+            relativePath = path.substring(state.sourceRootDir.length + 1);
+        }
+
         state.files.push({
             path, name, format, size: 0,
             status: "pending", progress: 0, result: null,
+            relativePath,
         });
         newPaths.push(path);
     }
@@ -189,6 +230,14 @@ async function addFiles(paths) {
             console.warn("File sizes fetch error:", e);
         }
     }
+
+    // Detecter multi-format → proposer config par format
+    if (newPaths.length > 0) {
+        const formats = new Set(state.files.map(f => f.format));
+        if (formats.size >= 2 && state.presets.length > 0) {
+            showFormatConfigModal(formats);
+        }
+    }
 }
 
 function removeFile(index) {
@@ -202,6 +251,9 @@ function removeFile(index) {
 
 function clearFiles() {
     state.files = [];
+    state.formatFilter = null;
+    state.formatPresetMap = {};
+    state.sourceRootDir = null;
     state.lastOutputDir = null;
     hideOpenFolderButton();
     renderFiles();
@@ -311,7 +363,37 @@ function renderFiles() {
     zone.classList.add("hidden");
     container.classList.remove("hidden");
     content.classList.add("has-files");
-    document.getElementById("file-count").textContent = `${state.files.length} fichier(s)`;
+
+    // Compter les formats presents
+    const formatCounts = {};
+    for (const f of state.files) {
+        const fmt = (f.format || "unknown").toLowerCase();
+        formatCounts[fmt] = (formatCounts[fmt] || 0) + 1;
+    }
+
+    // Generer les chips de filtre
+    renderFormatFilters(formatCounts);
+
+    // Filtrer les fichiers selon le filtre actif
+    const filtered = state.formatFilter
+        ? state.files.filter(f => (f.format || "").toLowerCase() === state.formatFilter)
+        : state.files;
+
+    // Valider que le filtre est encore pertinent
+    if (state.formatFilter && !formatCounts[state.formatFilter]) {
+        state.formatFilter = null;
+    }
+
+    const countText = state.formatFilter
+        ? `${filtered.length} / ${state.files.length} fichier(s)`
+        : `${state.files.length} fichier(s)`;
+    const countEl = document.getElementById("file-count");
+    if (state.sourceRootDir) {
+        const folderName = state.sourceRootDir.split("/").pop();
+        countEl.innerHTML = `${countText} <span class="source-folder-badge">${escapeHtml(folderName)} → ${escapeHtml(folderName)}-export</span>`;
+    } else {
+        countEl.textContent = countText;
+    }
 
     const gridEl = document.getElementById("file-grid");
     const listEl = document.getElementById("file-list");
@@ -319,13 +401,109 @@ function renderFiles() {
     if (state.viewMode === "grid") {
         gridEl.classList.remove("hidden");
         listEl.classList.add("hidden");
-        renderGrid(gridEl);
+        renderGrid(gridEl, filtered);
     } else {
         gridEl.classList.add("hidden");
         listEl.classList.remove("hidden");
-        renderList(listEl);
+        renderList(listEl, filtered);
     }
 }
+
+
+function renderFormatFilters(formatCounts) {
+    const container = document.getElementById("format-filters");
+    const formats = Object.keys(formatCounts).sort();
+
+    // Ne pas afficher si un seul format
+    if (formats.length <= 1) {
+        container.innerHTML = "";
+        return;
+    }
+
+    container.innerHTML = formats.map(fmt => {
+        const active = state.formatFilter === fmt ? "active" : "";
+        const label = fmt.toUpperCase();
+        return `<button class="format-chip ${active}" data-format="${fmt}">${label} <span class="format-chip__count">${formatCounts[fmt]}</span></button>`;
+    }).join("");
+
+    container.querySelectorAll(".format-chip").forEach(chip => {
+        chip.addEventListener("click", () => {
+            const fmt = chip.dataset.format;
+            state.formatFilter = (state.formatFilter === fmt) ? null : fmt;
+            renderFiles();
+        });
+    });
+}
+
+// ── Format Config Modal ─────────────────
+
+function setupFormatConfigModal() {
+    document.getElementById("format-config-skip").addEventListener("click", () => {
+        state.formatPresetMap = {};
+        closeModal("format-config-modal");
+    });
+
+    document.getElementById("format-config-apply").addEventListener("click", () => {
+        // Lire les selections
+        const selects = document.querySelectorAll("#format-config-list .format-config-row__select");
+        state.formatPresetMap = {};
+        selects.forEach(sel => {
+            const fmt = sel.dataset.format;
+            const presetId = sel.value;
+            if (presetId) {
+                state.formatPresetMap[fmt] = presetId;
+            }
+        });
+        closeModal("format-config-modal");
+
+        // Feedback
+        const count = Object.keys(state.formatPresetMap).length;
+        if (count > 0) {
+            showSnackbar(`${count} format(s) configure(s)`);
+        }
+    });
+}
+
+function showFormatConfigModal(formats) {
+    const list = document.getElementById("format-config-list");
+    const formatArr = Array.from(formats).sort();
+
+    // Compter les fichiers par format
+    const counts = {};
+    for (const f of state.files) {
+        counts[f.format] = (counts[f.format] || 0) + 1;
+    }
+
+    // Construire les options de presets
+    const presetOptions = state.presets.map(p =>
+        `<option value="${p.id}">${escapeHtml(p.name)}${p.category ? ` (${escapeHtml(p.category)})` : ""}</option>`
+    ).join("");
+
+    list.innerHTML = formatArr.map(fmt => {
+        const currentPresetId = state.formatPresetMap[fmt] || "";
+        return `
+            <div class="format-config-row">
+                <span class="format-config-row__badge ${fmt}">${fmt.toUpperCase()}</span>
+                <span class="format-config-row__count">${counts[fmt] || 0} fichier(s)</span>
+                <select class="field__select format-config-row__select" data-format="${fmt}">
+                    <option value="">Reglages actuels</option>
+                    ${presetOptions}
+                </select>
+            </div>
+        `;
+    }).join("");
+
+    // Pre-selectionner si deja configure
+    list.querySelectorAll(".format-config-row__select").forEach(sel => {
+        const fmt = sel.dataset.format;
+        if (state.formatPresetMap[fmt]) {
+            sel.value = state.formatPresetMap[fmt];
+        }
+    });
+
+    openModal("format-config-modal");
+}
+
 
 // ── Shared rendering helpers ─────────────
 
@@ -350,8 +528,10 @@ function buildPreviewBtn(index) {
 
 // ── Grid Rendering ────────────────────────
 
-function renderGrid(container) {
-    container.innerHTML = state.files.map((f, i) => {
+function renderGrid(container, files) {
+    const filesToRender = files || state.files;
+    container.innerHTML = filesToRender.map((f) => {
+        const i = state.files.indexOf(f);
         const statusClass = getStatusClass(f.status);
         const escapedName = escapeHtml(f.name);
         const escapedPath = escapeHtml(f.path);
@@ -380,9 +560,11 @@ function renderGrid(container) {
         }
 
         const thumbUrl = `/api/thumbnail?path=${encodeURIComponent(f.path)}&size=512`;
-        const dimText = f.dimensions
-            ? (f.dimensions.pages ? `${f.dimensions.w}\u00d7${f.dimensions.h} pt \u00b7 ${f.dimensions.pages} p.` : `${f.dimensions.w}\u00d7${f.dimensions.h} px`)
-            : '';
+        const dimText = f._displayDimensions
+            ? `${f._displayDimensions} px`
+            : f.dimensions
+                ? (f.dimensions.pages ? `${f.dimensions.w}\u00d7${f.dimensions.h} pt \u00b7 ${f.dimensions.pages} p.` : `${f.dimensions.w}\u00d7${f.dimensions.h} px`)
+                : '';
 
         // Size badge: dual badge when estimate available (before compression)
         let sizeBadgeHtml;
@@ -417,6 +599,7 @@ function renderGrid(container) {
                 ${expandOverlay}
             </div>
             <div class="file-card__body">
+                ${f.relativePath && f.relativePath.includes("/") ? `<span class="file-card__folder">${escapeHtml(f.relativePath.substring(0, f.relativePath.lastIndexOf("/")))}</span>` : ""}
                 <span class="file-card__name">${escapedName}</span>
                 <span class="file-card__meta">${sizeBadgeHtml}</span>
             </div>
@@ -427,8 +610,10 @@ function renderGrid(container) {
 
 // ── List Rendering ────────────────────────
 
-function renderList(container) {
-    container.innerHTML = state.files.map((f, i) => {
+function renderList(container, files) {
+    const filesToRender = files || state.files;
+    container.innerHTML = filesToRender.map((f) => {
+        const i = state.files.indexOf(f);
         const statusClass = getStatusClass(f.status);
         const escapedName = escapeHtml(f.name);
         const escapedPath = escapeHtml(f.path);
@@ -458,9 +643,11 @@ function renderList(container) {
         }
 
         const thumbUrl = `/api/thumbnail?path=${encodeURIComponent(f.path)}&size=80`;
-        const dimInfo = f.dimensions
-            ? (f.dimensions.pages ? `${f.dimensions.w}\u00d7${f.dimensions.h} pt \u00b7 ${f.dimensions.pages} p.` : `${f.dimensions.w}\u00d7${f.dimensions.h} px`)
-            : '';
+        const dimInfo = f._displayDimensions
+            ? `${f._displayDimensions} px`
+            : f.dimensions
+                ? (f.dimensions.pages ? `${f.dimensions.w}\u00d7${f.dimensions.h} pt \u00b7 ${f.dimensions.pages} p.` : `${f.dimensions.w}\u00d7${f.dimensions.h} px`)
+                : '';
         if (!f.result) {
             // Dual badge when estimate available
             let sizeBadgeHtml;
@@ -491,6 +678,27 @@ function reductionClass(pct) {
     if (pct > REDUCTION_THRESHOLD_GOOD) return "reduction-good";
     if (pct > REDUCTION_THRESHOLD_OK) return "reduction-ok";
     return "reduction-poor";
+}
+
+function resetResultsOnSettingsChange() {
+    // Quand un paramètre change, on efface les résultats précédents
+    // pour permettre la recompression avec les nouveaux paramètres
+    let changed = false;
+    state.files.forEach(f => {
+        if (f.result) {
+            f.result = null;
+            f.subResults = null;
+            f.status = "pending";
+            f._estimatedSize = null;
+            f._displayDimensions = null;
+            changed = true;
+        }
+    });
+    if (changed) {
+        renderFiles();
+        updateCompressButton();
+        updateSummary();
+    }
 }
 
 function updateCompressButton() {
@@ -528,6 +736,7 @@ function setupSideSheet() {
         const isPdf = document.getElementById("output-format").value === "pdf";
         document.getElementById("custom-quality").classList.toggle("hidden", !(isCustom && !isPdf));
         document.getElementById("custom-pdf").classList.toggle("hidden", !(isCustom && isPdf));
+        resetResultsOnSettingsChange();
         updateLevelEstimates();
         updatePreCompressionSummary();
     });
@@ -538,6 +747,7 @@ function setupSideSheet() {
     slider.addEventListener("input", () => {
         valSpan.textContent = slider.value;
         updateQualityEstimate();
+        resetResultsOnSettingsChange();
         updateLevelEstimates();
         updatePreCompressionSummary();
     });
@@ -590,11 +800,13 @@ function setupResizeMode() {
 
     select.addEventListener("change", () => {
         updateResizeFields();
+        resetResultsOnSettingsChange();
         updateLevelEstimates();
         updatePreCompressionSummary();
     });
     percentSlider.addEventListener("input", () => {
         percentValue.textContent = `${percentSlider.value}%`;
+        resetResultsOnSettingsChange();
         updateLevelEstimates();
         updatePreCompressionSummary();
     });
@@ -603,6 +815,7 @@ function setupResizeMode() {
     ["resize-width", "resize-height", "resize-fit-w", "resize-fit-h"].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.addEventListener("input", () => {
+            resetResultsOnSettingsChange();
             updateLevelEstimates();
             updatePreCompressionSummary();
         });
@@ -662,11 +875,29 @@ function setupLosslessToggle() {
         const isPdf = formatSelect.value === "pdf";
         document.getElementById("custom-quality").classList.toggle("hidden", !(isCustom && !isPdf));
         document.getElementById("custom-pdf").classList.toggle("hidden", !(isCustom && isPdf));
+        resetResultsOnSettingsChange();
         updateLevelEstimates();
         updatePreCompressionSummary();
     });
-    losslessToggle.addEventListener("change", updateQualityDisabled);
+    losslessToggle.addEventListener("change", () => {
+        updateQualityDisabled();
+        resetResultsOnSettingsChange();
+        updateLevelEstimates();
+        updatePreCompressionSummary();
+    });
     updateLosslessVisibility();
+
+    // target-size, strip-metadata : reset on change
+    document.getElementById("target-size").addEventListener("input", () => {
+        resetResultsOnSettingsChange();
+        updateLevelEstimates();
+        updatePreCompressionSummary();
+    });
+    document.getElementById("strip-metadata").addEventListener("change", () => {
+        resetResultsOnSettingsChange();
+        updateLevelEstimates();
+        updatePreCompressionSummary();
+    });
 }
 
 // ── Quality Estimation ────────────────
@@ -700,29 +931,20 @@ let _estimateAbort = null;
 let _lastEstimates = null;  // cache des dernières estimations
 
 function updateLevelEstimates() {
-    // Debounce : attend 300ms après le dernier changement
     if (_estimateTimer) clearTimeout(_estimateTimer);
     _estimateTimer = setTimeout(_fetchEstimates, 300);
 }
 
 async function _fetchEstimates() {
+    // Masquer les labels globaux sous High/Medium/Low (on garde juste les per-file)
     const container = document.getElementById("level-estimates");
-    if (!container) return;
+    if (container) container.classList.add("hidden");
 
     const paths = state.files.map(f => f.path).filter(Boolean);
     if (paths.length === 0) {
-        container.classList.add("hidden");
         _lastEstimates = null;
         return;
     }
-
-    container.classList.remove("hidden");
-
-    // Afficher "..." pendant le calcul
-    ["high", "medium", "low", "custom"].forEach(level => {
-        const el = container.querySelector(`[data-est="${level}"]`);
-        if (el && el.textContent.charAt(0) !== "~") el.textContent = "...";
-    });
 
     // Annuler la requête précédente si encore en cours
     if (_estimateAbort) _estimateAbort.abort();
@@ -764,6 +986,19 @@ async function _fetchEstimates() {
                         f._estimatedSize = newVal;
                         changed = true;
                     }
+                    // Mettre à jour les dimensions affichées si resize actif
+                    const fw = est[level].final_w;
+                    const fh = est[level].final_h;
+                    if (fw && fh && f.dimensions) {
+                        const newDim = `${fw}×${fh}`;
+                        if (f._displayDimensions !== newDim) {
+                            f._displayDimensions = newDim;
+                            changed = true;
+                        }
+                    } else if (f._displayDimensions) {
+                        f._displayDimensions = null;
+                        changed = true;
+                    }
                 } else if (f._estimatedSize != null) {
                     f._estimatedSize = null;
                     changed = true;
@@ -792,6 +1027,9 @@ function _gatherEstimateSettings() {
         resizeHeight = parseInt(document.getElementById("resize-fit-h").value) || null;
     }
 
+    const activeBtn = document.querySelector("#level-buttons .segmented-button__item.active");
+    const activeLevel = activeBtn ? activeBtn.dataset.level : "medium";
+
     return {
         output_format: document.getElementById("output-format").value || null,
         resize_mode: resizeMode,
@@ -803,6 +1041,8 @@ function _gatherEstimateSettings() {
         pdf_custom_quality: parseInt(document.getElementById("pdf-custom-quality").value) || 70,
         strip_metadata: document.getElementById("strip-metadata").checked,
         lossless: document.getElementById("lossless-toggle").checked,
+        active_level: activeLevel,
+        target_size_kb: parseInt(document.getElementById("target-size").value) || null,
     };
 }
 
@@ -969,6 +1209,9 @@ async function loadSettings() {
             document.getElementById("default-output-dir").value = s.default_output_dir;
         }
 
+        // Quick presets
+        loadQuickPresets(s);
+
         // Auto-check updates
         if (s.auto_check_updates !== false) {
             setTimeout(() => checkForUpdates(true), AUTO_CHECK_DELAY_MS);
@@ -1045,11 +1288,28 @@ async function startCompression() {
     connectSSE();
 
     const filePaths = state.files.map(f => f.path);
+    const compressPayload = { files: filePaths, settings };
+    if (state.sourceRootDir) {
+        compressPayload.source_root_dir = state.sourceRootDir;
+    }
+    if (Object.keys(state.formatPresetMap).length > 0) {
+        // Resoudre les preset IDs en settings
+        const formatSettings = {};
+        for (const [fmt, presetId] of Object.entries(state.formatPresetMap)) {
+            const preset = state.presets.find(p => p.id === presetId);
+            if (preset) {
+                formatSettings[fmt] = preset.settings;
+            }
+        }
+        if (Object.keys(formatSettings).length > 0) {
+            compressPayload.format_settings = formatSettings;
+        }
+    }
     try {
         const res = await fetch("/api/compress", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ files: filePaths, settings }),
+            body: JSON.stringify(compressPayload),
         });
         if (!res.ok) {
             const err = await res.json();
@@ -1186,8 +1446,18 @@ function connectSSE() {
                     showOpenFolderButton();
                 }
                 updateCompressButton();
-                document.getElementById("progress-text").textContent =
-                    `Termine \u2014 ${data.saved_mb} MB economises`;
+                // Animation de fin : checkmark + texte
+                document.getElementById("progress-fill").style.width = "100%";
+                document.getElementById("progress-fill").classList.add("progress-bar__fill--done");
+                document.getElementById("progress-text").innerHTML =
+                    `<span class="progress-check">\u2713</span> ${data.count} fichier(s) \u2014 ${data.saved_mb} MB economises`;
+                // Masquer la barre après 5s
+                setTimeout(() => {
+                    const gp = document.getElementById("global-progress");
+                    gp.classList.add("hidden");
+                    document.getElementById("progress-fill").classList.remove("progress-bar__fill--done");
+                    document.getElementById("progress-fill").style.width = "0%";
+                }, 5000);
                 updateSummary();
                 loadHistory();
                 closeSSE();
@@ -1606,6 +1876,12 @@ function closeModal(id) {
         state._previousFocus = null;
     }
 
+    // Hide save form when closing presets modal
+    if (id === "presets-modal") {
+        const sf = document.getElementById("preset-modal-save-form");
+        if (sf) sf.classList.add("hidden");
+    }
+
     // Clean up preview images
     if (id === "preview-modal") {
         document.getElementById("preview-original").src = "";
@@ -1622,14 +1898,10 @@ function setupModals() {
     document.querySelectorAll(".modal-close-btn[data-modal]").forEach(btn => {
         btn.addEventListener("click", () => closeModal(btn.dataset.modal));
     });
-    // Close via Escape key (skip auth modals)
+    // Close via Escape key
     document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") {
-            document.querySelectorAll(".modal.open").forEach(m => {
-                if (m.id !== "login-modal" && m.id !== "create-profile-modal") {
-                    closeModal(m.id);
-                }
-            });
+            document.querySelectorAll(".modal.open").forEach(m => closeModal(m.id));
         }
     });
 }
@@ -1881,22 +2153,12 @@ function showSnackbar(message, isError = false) {
 // ── Presets ───────────────────────────────
 
 function setupPresets() {
-    const catFilter = document.getElementById("preset-category-filter");
     const select = document.getElementById("preset-select");
     const saveBtn = document.getElementById("preset-save-btn");
     const clearBtn = document.getElementById("preset-clear-btn");
-    const saveForm = document.getElementById("preset-save-form");
+    const saveForm = document.getElementById("preset-modal-save-form");
     const cancelBtn = document.getElementById("preset-cancel-btn");
     const confirmBtn = document.getElementById("preset-confirm-btn");
-    const addCatBtn = document.getElementById("preset-add-cat-btn");
-
-    // Category filter → update preset dropdown
-    catFilter.addEventListener("change", () => {
-        renderPresetDropdown();
-        select.value = "";
-        setActivePreset(null);
-        clearBtn.classList.add("hidden");
-    });
 
     // Select preset
     select.addEventListener("change", () => {
@@ -1907,11 +2169,6 @@ function setupPresets() {
             const preset = state.presets.find(p => p.id === id);
             if (preset) {
                 applySettingsToUI(preset.settings);
-                if (preset.category) {
-                    catFilter.value = preset.category;
-                } else {
-                    catFilter.value = "";
-                }
             }
         }
     });
@@ -1924,7 +2181,7 @@ function setupPresets() {
         clearBtn.classList.add("hidden");
     });
 
-    // Save button → show form
+    // Save button → open modal in creation mode
     saveBtn.addEventListener("click", () => {
         const s = gatherSettings();
         const fmt = s.output_format ? s.output_format.toUpperCase() : "Original";
@@ -1932,45 +2189,162 @@ function setupPresets() {
         document.getElementById("preset-name").value = `${fmt} ${lvl}`;
         renderCategorySelect();
         saveForm.classList.remove("hidden");
-        document.getElementById("preset-name").focus();
-        document.getElementById("preset-name").select();
+        openModal("presets-modal");
+        setTimeout(() => {
+            document.getElementById("preset-name").focus();
+            document.getElementById("preset-name").select();
+        }, 100);
     });
 
-    cancelBtn.addEventListener("click", () => saveForm.classList.add("hidden"));
-    confirmBtn.addEventListener("click", () => savePreset());
+    cancelBtn.addEventListener("click", () => {
+        saveForm.classList.add("hidden");
+    });
+    confirmBtn.addEventListener("click", () => {
+        savePreset();
+        saveForm.classList.add("hidden");
+    });
 
     document.getElementById("preset-name").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") { e.preventDefault(); savePreset(); }
+        if (e.key === "Enter") { e.preventDefault(); savePreset(); saveForm.classList.add("hidden"); }
         if (e.key === "Escape") { saveForm.classList.add("hidden"); }
     });
 
-    addCatBtn.addEventListener("click", () => {
-        const form = document.getElementById("sidebar-add-cat-form");
-        form.classList.toggle("hidden");
-        if (!form.classList.contains("hidden")) {
-            const input = document.getElementById("sidebar-cat-name");
-            input.value = "";
-            input.focus();
-        }
-    });
-
-    document.getElementById("sidebar-cat-confirm").addEventListener("click", async () => {
-        const input = document.getElementById("sidebar-cat-name");
-        await addCategory(input.value);
-        document.getElementById("sidebar-add-cat-form").classList.add("hidden");
-    });
-
-    document.getElementById("sidebar-cat-name").addEventListener("keydown", async (e) => {
-        if (e.key === "Enter") {
-            e.preventDefault();
-            await addCategory(document.getElementById("sidebar-cat-name").value);
-            document.getElementById("sidebar-add-cat-form").classList.add("hidden");
-        }
-        if (e.key === "Escape") {
-            document.getElementById("sidebar-add-cat-form").classList.add("hidden");
-        }
+    // Manage link → open modal
+    document.getElementById("presets-manage-link").addEventListener("click", () => {
+        renderPresetsModal();
+        openModal("presets-modal");
     });
 }
+
+// ── Quick Presets (3 raccourcis) ─────────
+
+// Stocke les IDs des presets assignes aux 3 slots
+const quickPresetSlots = [null, null, null]; // index 0=slot1, 1=slot2, 2=slot3
+
+function setupQuickPresets() {
+    for (let slot = 1; slot <= 3; slot++) {
+        const el = document.getElementById(`quick-preset-${slot}`);
+
+        // Clic gauche : appliquer ou assigner
+        el.addEventListener("click", () => {
+            const presetId = quickPresetSlots[slot - 1];
+            if (presetId) {
+                // Appliquer le preset
+                const preset = state.presets.find(p => p.id === presetId);
+                if (preset) {
+                    applySettingsToUI(preset.settings);
+                    setActivePreset(preset.id);
+                    document.getElementById("preset-select").value = preset.id;
+                    document.getElementById("preset-clear-btn").classList.remove("hidden");
+                    // Sync category filter
+                    const catFilter = document.getElementById("preset-category-filter");
+                    catFilter.value = preset.category || "";
+                    renderPresetDropdown();
+                    document.getElementById("preset-select").value = preset.id;
+                    updateQuickPresetUI();
+                    showSnackbar(`Preset "${preset.name}" applique`);
+                } else {
+                    // Preset supprime — vider le slot
+                    quickPresetSlots[slot - 1] = null;
+                    saveQuickPresets();
+                    updateQuickPresetUI();
+                }
+            } else {
+                // Slot vide → assigner le preset actif
+                const activeId = state.activePresetId;
+                if (!activeId) {
+                    showSnackbar("Selectionnez d'abord un preset");
+                    return;
+                }
+                quickPresetSlots[slot - 1] = activeId;
+                saveQuickPresets();
+                updateQuickPresetUI();
+                const preset = state.presets.find(p => p.id === activeId);
+                showSnackbar(`"${preset ? preset.name : 'Preset'}" assigne au raccourci ${slot}`);
+            }
+        });
+
+        // Clic droit : menu contextuel (reassigner / vider)
+        el.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            const presetId = quickPresetSlots[slot - 1];
+            if (presetId) {
+                // Vider le slot
+                quickPresetSlots[slot - 1] = null;
+                saveQuickPresets();
+                updateQuickPresetUI();
+                showSnackbar(`Raccourci ${slot} vide`);
+            } else if (state.activePresetId) {
+                // Assigner le preset actif
+                quickPresetSlots[slot - 1] = state.activePresetId;
+                saveQuickPresets();
+                updateQuickPresetUI();
+            }
+        });
+    }
+}
+
+function updateQuickPresetUI() {
+    for (let slot = 1; slot <= 3; slot++) {
+        const el = document.getElementById(`quick-preset-${slot}`);
+        const label = el.querySelector(".quick-preset__label");
+        const icon = el.querySelector(".quick-preset__icon");
+        const summary = el.querySelector(".quick-preset__summary");
+        const presetId = quickPresetSlots[slot - 1];
+
+        if (presetId) {
+            const preset = state.presets.find(p => p.id === presetId);
+            if (preset) {
+                label.textContent = preset.name;
+                summary.textContent = generatePresetSummary(preset.settings);
+                if (icon) icon.style.display = "none";
+                el.classList.add("assigned");
+                el.classList.toggle("active", state.activePresetId === presetId);
+                el.title = `${preset.name}\nClic droit pour retirer`;
+            } else {
+                quickPresetSlots[slot - 1] = null;
+                label.textContent = "Vide";
+                summary.textContent = "";
+                if (icon) icon.style.display = "";
+                el.classList.remove("assigned", "active");
+                el.title = "Cliquer pour assigner le preset actif";
+            }
+        } else {
+            label.textContent = "Vide";
+            summary.textContent = "";
+            if (icon) icon.style.display = "";
+            el.classList.remove("assigned", "active");
+            el.title = "Cliquer pour assigner le preset actif";
+        }
+    }
+}
+
+function saveQuickPresets() {
+    // Sauvegarder dans les settings utilisateur
+    try {
+        fetch("/api/settings").then(r => r.json()).then(settings => {
+            settings.quick_presets = [...quickPresetSlots];
+            fetch("/api/settings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(settings),
+            });
+        });
+    } catch (e) {
+        console.error("Save quick presets error:", e);
+    }
+}
+
+function loadQuickPresets(settings) {
+    const saved = settings.quick_presets;
+    if (Array.isArray(saved) && saved.length === 3) {
+        quickPresetSlots[0] = saved[0] || null;
+        quickPresetSlots[1] = saved[1] || null;
+        quickPresetSlots[2] = saved[2] || null;
+    }
+    updateQuickPresetUI();
+}
+
 
 // ── Presets Modal (gestion) ──────────────
 
@@ -1978,10 +2352,6 @@ function setupPresetsModal() {
     document.getElementById("presets-icon").addEventListener("click", () => {
         renderPresetsModal();
         openModal("presets-modal");
-    });
-
-    document.getElementById("preset-modal-cat-filter").addEventListener("change", () => {
-        renderPresetCards();
     });
 
     document.getElementById("preset-modal-import-btn").addEventListener("click", async () => {
@@ -2028,96 +2398,195 @@ function setupPresetsModal() {
         });
     });
 
-    // Category management toggle
-    document.getElementById("preset-modal-manage-cat-btn").addEventListener("click", () => {
-        const catList = document.getElementById("preset-modal-cat-list");
-        const isVisible = !catList.classList.contains("hidden");
-        if (isVisible) {
-            catList.classList.add("hidden");
-        } else {
-            renderCategoryList();
-            catList.classList.remove("hidden");
-        }
-    });
 }
 
 function renderPresetsModal() {
-    renderModalCategoryFilter();
     renderPresetCards();
     document.getElementById("preset-select-all").checked = false;
-}
-
-function renderModalCategoryFilter() {
-    const catFilter = document.getElementById("preset-modal-cat-filter");
-    const currentVal = catFilter.value;
-    catFilter.innerHTML = '<option value="">Toutes les categories</option>';
-    for (const cat of state.categories) {
-        const opt = document.createElement("option");
-        opt.value = cat;
-        opt.textContent = cat;
-        catFilter.appendChild(opt);
-    }
-    catFilter.value = currentVal;
-    if (!catFilter.value && currentVal) catFilter.value = "";
 }
 
 function renderPresetCards() {
     const list = document.getElementById("preset-modal-list");
     const empty = document.getElementById("preset-modal-empty");
     const footer = document.getElementById("preset-modal-footer");
-    const selectAllRow = document.getElementById("preset-select-all-row");
-    const filterCat = document.getElementById("preset-modal-cat-filter").value;
-
-    let filtered = state.presets;
-    if (filterCat === "__none__") {
-        filtered = state.presets.filter(p => !p.category);
-    } else if (filterCat) {
-        filtered = state.presets.filter(p => p.category === filterCat);
-    }
 
     list.innerHTML = "";
-    if (filtered.length === 0) {
+
+    if (state.presets.length === 0 && state.categories.length === 0) {
         empty.classList.remove("hidden");
         footer.classList.add("hidden");
-        selectAllRow.classList.add("hidden");
         return;
     }
     empty.classList.add("hidden");
-    footer.classList.remove("hidden");
-    selectAllRow.classList.remove("hidden");
+    footer.classList.toggle("hidden", state.presets.length === 0);
 
-    for (const p of filtered) {
-        const card = document.createElement("div");
-        card.className = "preset-card";
-        card.dataset.id = p.id;
-        card.innerHTML = `
-            <div class="preset-card__header">
-                <input type="checkbox" class="preset-card__check" data-id="${p.id}">
-                <span class="preset-card__name">${escapeHtml(p.name)}</span>
-                ${p.category ? `<span class="preset-card__badge">${escapeHtml(p.category)}</span>` : ""}
-            </div>
-            <div class="preset-card__rename-form hidden">
-                <input type="text" class="field__input field__input--sm preset-card__rename-input" value="${escapeHtml(p.name)}" data-id="${p.id}">
-                <button class="btn btn--tonal btn--sm preset-card__rename-ok" data-id="${p.id}">OK</button>
-                <button class="btn btn--text btn--sm preset-card__rename-cancel">Annuler</button>
-            </div>
-            <div class="preset-card__summary">${generatePresetSummary(p.settings)}</div>
-            <div class="preset-card__actions">
-                <button class="btn btn--text btn--sm preset-card__rename" data-id="${p.id}">Renommer</button>
-                <button class="btn btn--text btn--sm preset-card__update" data-id="${p.id}">Modifier</button>
-                <button class="btn btn--text btn--sm btn--error preset-card__delete" data-id="${p.id}">Supprimer</button>
-            </div>
-        `;
-        list.appendChild(card);
+    // Group presets by category
+    const byCategory = {};
+    const noCat = [];
+    for (const p of state.presets) {
+        if (p.category) {
+            if (!byCategory[p.category]) byCategory[p.category] = [];
+            byCategory[p.category].push(p);
+        } else {
+            noCat.push(p);
+        }
     }
 
-    // Event delegation for card actions
+    // Render each category as a group
+    for (const cat of state.categories) {
+        const presets = byCategory[cat] || [];
+        const group = document.createElement("div");
+        group.className = "preset-group";
+        group.dataset.cat = cat;
+
+        const countLabel = presets.length === 1 ? "1 preset" : `${presets.length} presets`;
+        group.innerHTML = `
+            <div class="preset-group__header" role="button">
+                <svg class="preset-group__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="9 18 15 12 9 6"/></svg>
+                <span class="preset-group__name">${escapeHtml(cat)}</span>
+                <span class="preset-group__count">${countLabel}</span>
+                <div class="preset-group__actions">
+                    <button class="btn--icon btn--icon--sm preset-group__rename-btn" title="Renommer">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+                    </button>
+                    <button class="btn--icon btn--icon--sm btn--icon-error preset-group__delete-btn" title="Supprimer">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="preset-group__rename-form hidden">
+                <input type="text" class="field__input field__input--sm" value="${escapeHtml(cat)}">
+                <button class="btn btn--tonal btn--sm preset-group__rename-ok">OK</button>
+                <button class="btn btn--text btn--sm preset-group__rename-cancel">Annuler</button>
+            </div>
+        `;
+
+        // Add preset cards under this category (collapsed by default)
+        const presetsContainer = document.createElement("div");
+        presetsContainer.className = "preset-group__presets hidden";
+        for (const p of presets) {
+            presetsContainer.appendChild(_createPresetCard(p));
+        }
+        group.appendChild(presetsContainer);
+
+        list.appendChild(group);
+    }
+
+    // Presets sans categorie
+    if (noCat.length > 0) {
+        const countLabel = noCat.length === 1 ? "1 preset" : `${noCat.length} presets`;
+        const group = document.createElement("div");
+        group.className = "preset-group";
+        group.innerHTML = `
+            <div class="preset-group__header preset-group__header--nocat" role="button">
+                <svg class="preset-group__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="9 18 15 12 9 6"/></svg>
+                <span class="preset-group__name">Sans categorie</span>
+                <span class="preset-group__count">${countLabel}</span>
+            </div>
+        `;
+        const presetsContainer = document.createElement("div");
+        presetsContainer.className = "preset-group__presets hidden";
+        for (const p of noCat) {
+            presetsContainer.appendChild(_createPresetCard(p));
+        }
+        group.appendChild(presetsContainer);
+        list.appendChild(group);
+    }
+
+    // Wire up category actions (read cat name from parent .preset-group dataset)
+    list.querySelectorAll(".preset-group__rename-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const group = btn.closest(".preset-group");
+            group.querySelector(".preset-group__header").classList.add("hidden");
+            group.querySelector(".preset-group__rename-form").classList.remove("hidden");
+            const input = group.querySelector(".preset-group__rename-form input");
+            input.focus();
+            input.select();
+        });
+    });
+    list.querySelectorAll(".preset-group__rename-ok").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const group = btn.closest(".preset-group");
+            const oldName = group.dataset.cat;
+            const input = group.querySelector(".preset-group__rename-form input");
+            renameCategory(oldName, input.value.trim());
+        });
+    });
+    list.querySelectorAll(".preset-group__rename-cancel").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const group = btn.closest(".preset-group");
+            group.querySelector(".preset-group__header").classList.remove("hidden");
+            group.querySelector(".preset-group__rename-form").classList.add("hidden");
+        });
+    });
+    list.querySelectorAll(".preset-group__rename-form input").forEach(input => {
+        input.addEventListener("keydown", (e) => {
+            const group = input.closest(".preset-group");
+            if (e.key === "Enter") { e.preventDefault(); renameCategory(group.dataset.cat, input.value.trim()); }
+            if (e.key === "Escape") {
+                group.querySelector(".preset-group__header").classList.remove("hidden");
+                group.querySelector(".preset-group__rename-form").classList.add("hidden");
+            }
+        });
+    });
+    list.querySelectorAll(".preset-group__delete-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const cat = btn.closest(".preset-group").dataset.cat;
+            deleteCategory(cat);
+        });
+    });
+
+    // Toggle collapse/expand on category header click
+    list.querySelectorAll(".preset-group__header").forEach(header => {
+        header.addEventListener("click", (e) => {
+            // Don't toggle if clicking on action buttons or rename form
+            if (e.target.closest(".preset-group__actions") || e.target.closest(".preset-group__rename-form")) return;
+            const group = header.closest(".preset-group");
+            const presets = group.querySelector(".preset-group__presets");
+            if (!presets) return;
+            const isOpen = !presets.classList.contains("hidden");
+            presets.classList.toggle("hidden");
+            group.classList.toggle("preset-group--open", !isOpen);
+        });
+    });
+
+    // Wire up preset card actions
+    _wirePresetCardActions(list);
+}
+
+function _createPresetCard(p) {
+    const card = document.createElement("div");
+    card.className = "preset-card";
+    card.dataset.id = p.id;
+    card.innerHTML = `
+        <div class="preset-card__header">
+            <input type="checkbox" class="preset-card__check" data-id="${p.id}">
+            <span class="preset-card__name">${escapeHtml(p.name)}</span>
+            <span class="preset-card__summary-inline">${generatePresetSummary(p.settings)}</span>
+            <div class="preset-card__actions">
+                <button class="btn--icon btn--icon--sm preset-card__rename" data-id="${p.id}" title="Renommer">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M17 3a2.83 2.83 0 114 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+                </button>
+                <button class="btn--icon btn--icon--sm btn--icon-error preset-card__delete" data-id="${p.id}" title="Supprimer">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="preset-card__rename-form hidden">
+            <input type="text" class="field__input field__input--sm preset-card__rename-input" value="${escapeHtml(p.name)}" data-id="${p.id}">
+            <button class="btn btn--tonal btn--sm preset-card__rename-ok" data-id="${p.id}">OK</button>
+            <button class="btn btn--text btn--sm preset-card__rename-cancel">Annuler</button>
+        </div>
+    `;
+    return card;
+}
+
+function _wirePresetCardActions(list) {
     list.querySelectorAll(".preset-card__rename").forEach(btn => {
         btn.addEventListener("click", () => {
             const card = btn.closest(".preset-card");
-            card.querySelector(".preset-card__rename-form").classList.remove("hidden");
             card.querySelector(".preset-card__header").classList.add("hidden");
-            card.querySelector(".preset-card__actions").classList.add("hidden");
+            card.querySelector(".preset-card__rename-form").classList.remove("hidden");
             const input = card.querySelector(".preset-card__rename-input");
             input.focus();
             input.select();
@@ -2131,7 +2600,6 @@ function renderPresetCards() {
             const card = btn.closest(".preset-card");
             card.querySelector(".preset-card__rename-form").classList.add("hidden");
             card.querySelector(".preset-card__header").classList.remove("hidden");
-            card.querySelector(".preset-card__actions").classList.remove("hidden");
         });
     });
     list.querySelectorAll(".preset-card__rename-input").forEach(input => {
@@ -2141,22 +2609,16 @@ function renderPresetCards() {
                 const card = input.closest(".preset-card");
                 card.querySelector(".preset-card__rename-form").classList.add("hidden");
                 card.querySelector(".preset-card__header").classList.remove("hidden");
-                card.querySelector(".preset-card__actions").classList.remove("hidden");
             }
         });
-    });
-    list.querySelectorAll(".preset-card__update").forEach(btn => {
-        btn.addEventListener("click", () => updatePreset(btn.dataset.id));
     });
     list.querySelectorAll(".preset-card__delete").forEach(btn => {
         btn.addEventListener("click", () => deletePreset(btn.dataset.id));
     });
-
-    // Update footer visibility based on checkbox state
     list.querySelectorAll(".preset-card__check").forEach(cb => {
         cb.addEventListener("change", () => {
             const anyChecked = list.querySelector(".preset-card__check:checked");
-            footer.classList.toggle("hidden", !anyChecked);
+            document.getElementById("preset-modal-footer").classList.toggle("hidden", !anyChecked);
         });
     });
 }
@@ -2258,25 +2720,43 @@ function renderCategoryFilter() {
 function renderPresetDropdown() {
     const select = document.getElementById("preset-select");
     const currentVal = select.value;
-    const filterCat = document.getElementById("preset-category-filter").value;
     select.innerHTML = '<option value="">Aucun preset</option>';
 
-    // Filter presets by selected category
-    let filtered = state.presets;
-    if (filterCat === "__none__") {
-        filtered = state.presets.filter(p => !p.category);
-    } else if (filterCat) {
-        filtered = state.presets.filter(p => p.category === filterCat);
+    // Group presets by category using optgroup
+    const byCategory = {};
+    const noCat = [];
+    for (const p of state.presets) {
+        if (p.category) {
+            if (!byCategory[p.category]) byCategory[p.category] = [];
+            byCategory[p.category].push(p);
+        } else {
+            noCat.push(p);
+        }
     }
 
-    for (const p of filtered) {
+    // Render optgroups for each category
+    for (const cat of state.categories) {
+        const presets = byCategory[cat];
+        if (!presets || presets.length === 0) continue;
+        const group = document.createElement("optgroup");
+        group.label = cat;
+        for (const p of presets) {
+            const opt = document.createElement("option");
+            opt.value = p.id;
+            opt.textContent = p.name;
+            group.appendChild(opt);
+        }
+        select.appendChild(group);
+    }
+
+    // Presets sans categorie
+    for (const p of noCat) {
         const opt = document.createElement("option");
         opt.value = p.id;
         opt.textContent = p.name;
         select.appendChild(opt);
     }
 
-    // Restore selection if still in filtered list
     select.value = currentVal;
     if (!select.value && currentVal) select.value = "";
 }
@@ -2400,6 +2880,7 @@ async function deletePreset(presetId) {
 
 async function setActivePreset(id) {
     state.activePresetId = id;
+    updateQuickPresetUI();
     try {
         await fetch("/api/presets/active", {
             method: "POST",
@@ -2563,12 +3044,6 @@ function renderCategoryList() {
 }
 
 async function deleteCategory(name) {
-    const count = state.presets.filter(p => p.category === name).length;
-    const msg = count > 0
-        ? `Supprimer la categorie "${name}" ? Les ${count} preset(s) associe(s) seront sans categorie.`
-        : `Supprimer la categorie "${name}" ?`;
-    if (!confirm(msg)) return;
-
     try {
         const res = await fetch("/api/presets/categories/delete", {
             method: "POST",
@@ -2578,9 +3053,9 @@ async function deleteCategory(name) {
         const data = await res.json();
         if (data.ok) {
             await loadPresets();
-            renderCategoryList();
             renderPresetsModal();
-            showSnackbar("Categorie supprimee");
+            renderPresetDropdown();
+            showSnackbar(`Categorie "${name}" supprimee`);
         } else {
             showSnackbar(data.error || "Erreur");
         }
@@ -2642,324 +3117,3 @@ function setTextWithSpinner(el, text) {
     el.appendChild(document.createTextNode(" " + text));
 }
 
-
-// ── User Profiles ─────────────────────────
-
-function setupUserModals() {
-    document.getElementById("user-icon").addEventListener("click", () => {
-        if (!state.currentUser) return;
-        renderUserMenu();
-        openModal("user-menu-modal");
-    });
-
-    // Login
-    document.getElementById("login-btn").addEventListener("click", loginUser);
-    document.getElementById("login-password").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") loginUser();
-    });
-    document.getElementById("login-create-btn").addEventListener("click", () => {
-        closeModal("login-modal");
-        openModal("create-profile-modal");
-        document.getElementById("create-profile-name").value = "";
-        document.getElementById("create-profile-password").value = "";
-        document.getElementById("create-profile-confirm").value = "";
-        document.getElementById("create-profile-error").classList.add("hidden");
-    });
-
-    // Create profile
-    document.getElementById("create-profile-btn").addEventListener("click", createProfile);
-    document.getElementById("create-profile-confirm").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") createProfile();
-    });
-
-    // User menu actions
-    document.getElementById("user-edit-btn").addEventListener("click", () => {
-        closeModal("user-menu-modal");
-        openEditProfile();
-    });
-    document.getElementById("user-switch-btn").addEventListener("click", async () => {
-        closeModal("user-menu-modal");
-        await fetch("/api/users/logout", { method: "POST" });
-        state.currentUser = null;
-        updateUserAvatar(null);
-        showLoginModal();
-    });
-    document.getElementById("user-delete-btn").addEventListener("click", () => {
-        closeModal("user-menu-modal");
-        document.getElementById("delete-profile-pw").value = "";
-        document.getElementById("delete-profile-error").classList.add("hidden");
-        openModal("delete-profile-modal");
-        document.getElementById("delete-profile-pw").focus();
-    });
-    document.getElementById("delete-profile-confirm-btn").addEventListener("click", deleteCurrentProfile);
-    document.getElementById("delete-profile-pw").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") deleteCurrentProfile();
-    });
-
-    // Edit profile
-    document.getElementById("edit-profile-save-btn").addEventListener("click", saveProfileEdits);
-    document.getElementById("edit-profile-new-pw").addEventListener("keydown", (e) => {
-        if (e.key === "Enter") saveProfileEdits();
-    });
-}
-
-
-async function checkUserStatus() {
-    try {
-        const res = await fetch("/api/users/status");
-        const data = await res.json();
-
-        if (data.active_user) {
-            // Session exists — show login to verify password
-            state.currentUser = data.active_user;
-            showLoginModal(data.active_user.id);
-        } else if (data.has_users) {
-            showLoginModal();
-        } else {
-            // No users — show create profile
-            openModal("create-profile-modal");
-        }
-    } catch (e) {
-        console.error("User status error:", e);
-        onLoginSuccess(null);
-    }
-}
-
-
-function showLoginModal(preselectUserId = null) {
-    fetch("/api/users").then(r => r.json()).then(data => {
-        const list = document.getElementById("login-user-list");
-        const users = data.users || [];
-
-        if (users.length === 0) {
-            openModal("create-profile-modal");
-            return;
-        }
-
-        list.innerHTML = users.map(u => `
-            <button class="login-user-card ${u.id === preselectUserId ? 'selected' : ''}" data-id="${u.id}">
-                <span class="user-avatar-circle" style="background:${u.avatar_color || '#D0BCFF'}">${escapeHtml(u.name.charAt(0).toUpperCase())}</span>
-                <span class="login-user-name">${escapeHtml(u.name)}</span>
-            </button>
-        `).join("");
-
-        list.querySelectorAll(".login-user-card").forEach(card => {
-            card.addEventListener("click", () => {
-                list.querySelectorAll(".login-user-card").forEach(c => c.classList.remove("selected"));
-                card.classList.add("selected");
-                document.getElementById("login-password-field").classList.remove("hidden");
-                document.getElementById("login-btn").disabled = false;
-                document.getElementById("login-password").value = "";
-                document.getElementById("login-error").classList.add("hidden");
-                document.getElementById("login-password").focus();
-            });
-        });
-
-        if (preselectUserId) {
-            document.getElementById("login-password-field").classList.remove("hidden");
-            document.getElementById("login-btn").disabled = false;
-            setTimeout(() => document.getElementById("login-password").focus(), 100);
-        } else {
-            document.getElementById("login-password-field").classList.add("hidden");
-            document.getElementById("login-btn").disabled = true;
-        }
-
-        openModal("login-modal");
-    });
-}
-
-
-async function loginUser() {
-    const selected = document.querySelector(".login-user-card.selected");
-    if (!selected) return;
-
-    const userId = selected.dataset.id;
-    const password = document.getElementById("login-password").value;
-    const errorEl = document.getElementById("login-error");
-
-    try {
-        const res = await fetch("/api/users/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ user_id: userId, password }),
-        });
-        const data = await res.json();
-
-        if (!res.ok) {
-            errorEl.textContent = data.error || "Erreur de connexion";
-            errorEl.classList.remove("hidden");
-            document.getElementById("login-password").value = "";
-            document.getElementById("login-password").focus();
-            return;
-        }
-
-        state.currentUser = data.user;
-        closeModal("login-modal");
-        onLoginSuccess(data.user);
-        if (data.must_change_password) {
-            showSnackbar("Veuillez changer votre mot de passe");
-            setTimeout(() => openEditProfile(), 500);
-        }
-    } catch (e) {
-        errorEl.textContent = "Erreur de connexion";
-        errorEl.classList.remove("hidden");
-    }
-}
-
-
-async function createProfile() {
-    const name = document.getElementById("create-profile-name").value.trim();
-    const pw = document.getElementById("create-profile-password").value;
-    const confirm = document.getElementById("create-profile-confirm").value;
-    const errorEl = document.getElementById("create-profile-error");
-
-    if (!name) { errorEl.textContent = "Nom requis"; errorEl.classList.remove("hidden"); return; }
-    if (pw.length < 4) { errorEl.textContent = "Mot de passe trop court (min 4 caracteres)"; errorEl.classList.remove("hidden"); return; }
-    if (pw !== confirm) { errorEl.textContent = "Les mots de passe ne correspondent pas"; errorEl.classList.remove("hidden"); return; }
-
-    try {
-        const res = await fetch("/api/users", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, password: pw }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-            errorEl.textContent = data.error || "Erreur";
-            errorEl.classList.remove("hidden");
-            return;
-        }
-
-        state.currentUser = data.user;
-        closeModal("create-profile-modal");
-        onLoginSuccess(data.user);
-        showSnackbar(`Profil "${name}" cree`);
-    } catch (e) {
-        errorEl.textContent = "Erreur de creation";
-        errorEl.classList.remove("hidden");
-    }
-}
-
-
-function onLoginSuccess(user) {
-    updateUserAvatar(user);
-    loadHistory();
-    loadSettings().then(() => loadPresets());
-    loadAppVersion();
-}
-
-
-function updateUserAvatar(user) {
-    const el = document.getElementById("user-avatar-initial");
-    if (user) {
-        el.textContent = user.name.charAt(0).toUpperCase();
-        el.style.background = user.avatar_color || "#D0BCFF";
-    } else {
-        el.textContent = "?";
-        el.style.background = "#938F99";
-    }
-}
-
-
-function renderUserMenu() {
-    const info = document.getElementById("user-menu-info");
-    const user = state.currentUser;
-    if (!user) return;
-    info.innerHTML = `
-        <span class="user-avatar-circle user-avatar-circle--lg" style="background:${user.avatar_color || '#D0BCFF'}">
-            ${escapeHtml(user.name.charAt(0).toUpperCase())}
-        </span>
-        <span class="user-menu-name">${escapeHtml(user.name)}</span>
-    `;
-}
-
-
-function openEditProfile() {
-    const user = state.currentUser;
-    if (!user) return;
-    document.getElementById("edit-profile-name").value = user.name;
-    document.getElementById("edit-profile-current-pw").value = "";
-    document.getElementById("edit-profile-new-pw").value = "";
-    document.getElementById("edit-profile-error").classList.add("hidden");
-    openModal("edit-profile-modal");
-    document.getElementById("edit-profile-current-pw").focus();
-}
-
-
-async function saveProfileEdits() {
-    const user = state.currentUser;
-    if (!user) return;
-    const name = document.getElementById("edit-profile-name").value.trim();
-    const currentPw = document.getElementById("edit-profile-current-pw").value;
-    const newPw = document.getElementById("edit-profile-new-pw").value;
-    const errorEl = document.getElementById("edit-profile-error");
-
-    if (!name) { errorEl.textContent = "Nom requis"; errorEl.classList.remove("hidden"); return; }
-    if (!currentPw) { errorEl.textContent = "Mot de passe actuel requis"; errorEl.classList.remove("hidden"); return; }
-
-    try {
-        const body = { current_password: currentPw, name };
-        if (newPw) body.new_password = newPw;
-
-        const res = await fetch(`/api/users/${user.id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-            errorEl.textContent = data.error || "Erreur";
-            errorEl.classList.remove("hidden");
-            return;
-        }
-
-        state.currentUser = data.user;
-        updateUserAvatar(data.user);
-        closeModal("edit-profile-modal");
-        showSnackbar("Profil mis a jour");
-    } catch (e) {
-        errorEl.textContent = "Erreur de sauvegarde";
-        errorEl.classList.remove("hidden");
-    }
-}
-
-
-async function deleteCurrentProfile() {
-    const user = state.currentUser;
-    if (!user) return;
-
-    const pw = document.getElementById("delete-profile-pw").value;
-    const errorEl = document.getElementById("delete-profile-error");
-
-    if (!pw) { errorEl.textContent = "Mot de passe requis"; errorEl.classList.remove("hidden"); return; }
-
-    try {
-        const res = await fetch(`/api/users/${user.id}`, {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password: pw }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-            errorEl.textContent = data.error || "Erreur";
-            errorEl.classList.remove("hidden");
-            return;
-        }
-
-        closeModal("delete-profile-modal");
-        state.currentUser = null;
-        updateUserAvatar(null);
-        showSnackbar("Profil supprime");
-
-        const usersRes = await fetch("/api/users");
-        const usersData = await usersRes.json();
-        if ((usersData.users || []).length === 0) {
-            openModal("create-profile-modal");
-        } else {
-            showLoginModal();
-        }
-    } catch (e) {
-        errorEl.textContent = "Erreur de suppression";
-        errorEl.classList.remove("hidden");
-    }
-}

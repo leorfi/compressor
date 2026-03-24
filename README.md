@@ -1,6 +1,6 @@
 # Compressor
 
-> App macOS native de compression de fichiers — PDF, JPEG, PNG, WebP.
+> App macOS native de compression de fichiers — PDF, JPEG, PNG, WebP, TIFF, SVG.
 > Tout est traite en local, aucun upload cloud. Vos fichiers restent sur votre machine.
 
 <p align="center">
@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.2.0-D0BCFF?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-3.0.0-D0BCFF?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/platform-macOS%2012%2B-lightgrey?style=flat-square" alt="macOS">
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
@@ -22,46 +22,47 @@
 
 - **PDF** — Rasterisation par page avec controle DPI et qualite
 - **JPEG** — Recompression avec qualite, subsampling, conservation EXIF
-- **PNG** — Reduction de palette adaptative (128-256 couleurs)
-- **WebP** — Compression lossy avec option taille cible (dichotomie)
+- **PNG** — Compression optimisee via **pngquant** + **oxipng** (jusqu'a -95%)
+- **WebP** — Compression lossy/lossless avec option taille cible
+- **TIFF** — Compression deflate ou conversion vers JPEG/PNG/WebP
+- **SVG** — Import sans modification (pass-through)
 - **Batch** — Glisser un dossier entier, traitement parallele
 
 ### Outils avances
 
 - **Redimensionnement** — Par largeur, hauteur, pourcentage, fit ou dimensions exactes
-- **Conversion de format** — JPEG vers WebP, PNG vers JPEG, etc.
-- **Taille cible** — Recherche dichotomique de la qualite optimale
-- **Strip metadata** — Suppression des donnees EXIF
-- **Mode lossless** — Compression sans perte (WebP, PNG)
+- **Conversion de format** — JPEG vers WebP, PNG vers JPEG, TIFF vers PNG, etc.
+- **Taille cible** — Recherche dichotomique de la qualite/couleurs optimales
+- **Strip metadata** — Suppression des donnees EXIF, GPS, date de prise de vue
+- **Mode lossless** — Compression sans perte (WebP, PNG via oxipng)
 - **Suffixe personnalise** — `_compressed`, `_web`, `_hd`, etc.
+- **Structure dossier** — Glisser un dossier → export dans `[dossier]-export/` avec la meme arborescence
 
 ### Presets
 
-- **Systeme de presets** — Sauvegardez vos configs favorites (format, qualite, resize, etc.)
+- **Presets** — Sauvegardez vos configs favorites (format, qualite, resize, etc.)
 - **Categories** — Organisez vos presets (Web, Print, Email, Archive...)
+- **Raccourcis rapides** — 3 slots d'acces direct dans la sidebar
 - **Import / Export** — Partagez vos presets en JSON entre collegues
-- **Application rapide** — Selectionnez un preset dans la sidebar, il s'applique instantanement
-
-### Profils utilisateurs
-
-- **Multi-utilisateurs** — Chaque personne a son profil avec ses propres presets et parametres
-- **Mot de passe** — Protection par profil (hash scrypt via Werkzeug)
-- **Donnees isolees** — Settings, presets, historique separes par utilisateur
+- **Config par format** — Au drop d'un dossier multi-format : assignez un preset par type (JPEG, PNG, WebP)
 
 ### Interface
 
 - **Design M3** — Material Design 3 dark theme
-- **Drag & drop** — Glisser-deposer des fichiers ou dossiers
+- **Drag & drop** — Glisser-deposer des fichiers ou dossiers (y compris sur la liste existante)
+- **Estimations en temps reel** — Poids estime par fichier, mis a jour en live quand vous changez les parametres
+- **Dimensions live** — Les dimensions affichees se mettent a jour quand vous changez le redimensionnement
 - **Preview** — Comparaison avant/apres cote a cote avec zoom
+- **Filtres par format** — Filtrer la liste par JPEG, PNG, WebP, PDF
 - **Historique** — 500 dernieres compressions avec statistiques
-- **Progression** — Temps reel via Server-Sent Events
-- **Notifications macOS** — Via `terminal-notifier` (optionnel)
+- **Barre de progression** — Compteur d'images + temps restant + animation de fin
+- **Notifications macOS** — Notification native quand la compression est terminee
 
 ### Mises a jour automatiques
 
-- L'app verifie les nouvelles versions au demarrage
+- L'app verifie les nouvelles versions au demarrage (via GitHub Releases)
 - Un badge apparait si une mise a jour est disponible
-- Un clic pour telecharger, installer et redemarrer — sans intervention manuelle
+- Un clic pour telecharger, installer et redemarrer
 
 ---
 
@@ -88,6 +89,9 @@ source .venv/bin/activate
 # Dependances
 pip install -r requirements.txt
 
+# Outils PNG optionnels (fortement recommandes)
+brew install pngquant oxipng
+
 # Lancer
 python3 main.py
 ```
@@ -97,6 +101,7 @@ python3 main.py
 - macOS 12+ (Monterey)
 - Python 3.10+
 - Git
+- **pngquant** + **oxipng** (optionnel, pour la compression PNG optimisee)
 
 ---
 
@@ -105,20 +110,20 @@ python3 main.py
 ### Compression
 
 1. **Glisser-deposer** des fichiers ou dossiers dans la zone de drop
-2. Choisir le **niveau** (Haute qualite / Moyen / Leger / Personnalise)
-3. Ajuster les options (format, resize, suffixe...)
+2. Choisir le **niveau** (High / Medium / Low / Custom)
+3. Ajuster les options (format, resize, taille cible, suffixe...)
 4. Cliquer **Compresser**
-5. Les fichiers sont crees a cote des originaux
+5. Les fichiers sont crees dans le dossier de sortie (ou `[dossier]-export/`)
 
 ### Presets
 
-- **Sauvegarder** : Configurez vos options, cliquez l'icone enregistrer, nommez votre preset
-- **Appliquer** : Selectionnez un preset dans le dropdown, les options s'appliquent
-- **Gerer** : Ouvrez le gestionnaire (icone presets dans la top bar) pour renommer, modifier, supprimer, importer/exporter
+- **Sauvegarder** : Configurez vos options, cliquez l'icone disque, nommez votre preset
+- **Raccourcis** : 3 slots rapides dans la sidebar — clic pour appliquer instantanement
+- **Gerer** : Cliquez "Gerer les presets" pour renommer, supprimer, importer/exporter
 
-### Profils
+### Config par format (dossiers multi-format)
 
-Au premier lancement, creez votre profil (nom + mot de passe). Vos presets et parametres sont lies a votre profil.
+Quand vous glissez un dossier contenant plusieurs formats (JPEG + PNG + WebP), un popup vous propose d'assigner un preset different par format. Chaque fichier sera compresse avec son propre preset.
 
 ---
 
@@ -126,21 +131,21 @@ Au premier lancement, creez votre profil (nom + mot de passe). Vos presets et pa
 
 ```
 app/
-├── main.py               # Flask + pywebview + routes API + updates
-├── compressor.py          # Moteur de compression (pur, sans I/O reseau)
-├── history.py             # Persistance : users, settings, presets, historique
+├── main.py               # Flask + pywebview + routes API
+├── compressor.py          # Moteur de compression (PDF, JPEG, PNG, WebP, TIFF, SVG)
+├── history.py             # Persistance : settings, presets, historique
 ├── config.py              # Configuration (.env + detection mode bundle)
 ├── VERSION                # Version semver
 ├── requirements.txt       # Dependances Python
 ├── compressor.spec        # Config PyInstaller (build .app)
 ├── build_dmg.sh           # Script de build DMG automatise
 ├── static/
-│   ├── css/style.css      # Styles M3 dark theme
-│   ├── js/app.js          # Frontend (drag&drop, SSE, modals, auth, presets)
+│   ├── css/style.css      # Styles M3 dark theme (~2000 lignes)
+│   ├── js/app.js          # Frontend (~3000 lignes)
 │   ├── icon.png           # Icone 512x512
 │   └── icon.icns          # Icone multi-resolution macOS
 └── templates/
-    └── index.html         # Page principale (Jinja2)
+    └── index.html         # Page principale
 ```
 
 ### Stack technique
@@ -151,37 +156,11 @@ app/
 | Serveur local | **Flask** (127.0.0.1, port 5050-5060) |
 | Compression PDF | **PyMuPDF** (fitz) |
 | Compression images | **Pillow** (PIL) |
+| Compression PNG | **pngquant** + **oxipng** (externe, optionnel) |
 | Progression | Server-Sent Events (SSE) |
 | Persistance | JSON + `fcntl` file locking + atomic writes |
-| Auth | **Werkzeug** (scrypt password hashing) |
 | Build | **PyInstaller** + `hdiutil` (DMG natif macOS) |
-| Mises a jour | GitHub Releases API (bundle) / Git tags (dev) |
-
----
-
-## API locale
-
-Le serveur Flask ecoute sur `127.0.0.1` uniquement :
-
-| Methode | Route | Description |
-|---------|-------|-------------|
-| `POST` | `/api/compress` | Lance une compression batch |
-| `GET` | `/api/progress` | Stream SSE (progression temps reel) |
-| `POST` | `/api/estimate` | Estime les tailles pour plusieurs niveaux |
-| `GET` | `/api/settings` | Lire les parametres |
-| `POST` | `/api/settings` | Sauvegarder les parametres |
-| `GET` | `/api/presets` | Liste des presets + categories |
-| `POST` | `/api/presets` | Creer un preset |
-| `PUT` | `/api/presets/<id>` | Modifier un preset |
-| `DELETE` | `/api/presets/<id>` | Supprimer un preset |
-| `POST` | `/api/presets/import` | Importer des presets (JSON) |
-| `POST` | `/api/presets/export` | Exporter des presets |
-| `GET` | `/api/users/status` | Etat de l'auth (session active ?) |
-| `POST` | `/api/users/login` | Connexion |
-| `POST` | `/api/users/logout` | Deconnexion |
-| `GET` | `/api/updates/check` | Verifier les mises a jour |
-| `POST` | `/api/updates/apply` | Installer la mise a jour |
-| `GET` | `/api/history` | Historique des compressions |
+| Mises a jour | GitHub Releases API |
 
 ---
 
@@ -191,13 +170,9 @@ Toutes les donnees sont stockees localement dans `~/.config/compressor/` :
 
 ```
 ~/.config/compressor/
-├── users.json              # Registre des profils (hash, pas de mdp en clair)
-├── session.json            # Session active
-└── users/
-    └── <user_id>/
-        ├── settings.json   # Parametres de l'utilisateur
-        ├── presets.json    # Presets + categories
-        └── history.json   # Historique (500 max)
+├── settings.json       # Parametres globaux
+├── presets.json        # Presets + categories
+└── history.json        # Historique (500 max)
 ```
 
 ---
@@ -207,78 +182,67 @@ Toutes les donnees sont stockees localement dans `~/.config/compressor/` :
 ### Generer le DMG
 
 ```bash
-# Depuis le dossier app/
 bash build_dmg.sh
 ```
 
 Resultat : `dist/Compressor-X.Y.Z.dmg` (~42 MB)
 
-Le script installe PyInstaller si necessaire, build le `.app`, et cree le DMG avec le layout drag-to-Applications.
-
 ### Publier une release
 
 ```bash
 # Tag + push
-git tag -a v2.2.0 -m "Description des changements"
+git tag -a v3.0.0 -m "Description"
 git push origin main --tags
 
-# Publier le DMG sur GitHub Releases
-gh release create v2.2.0 dist/Compressor-2.2.0.dmg --title "v2.2.0" --notes "Changelog ici"
+# Publier le DMG
+gh release create v3.0.0 dist/Compressor-3.0.0.dmg --title "v3.0.0" --notes "Changelog"
 ```
 
-Les utilisateurs recevront automatiquement la notification de mise a jour dans l'app.
+Les utilisateurs recevront la notification de mise a jour dans l'app.
 
 ---
 
 ## Securite
 
 - **Zero upload** — Tout est traite en local
-- **Serveur local** — Flask sur `127.0.0.1` uniquement (pas accessible depuis le reseau)
+- **Serveur local** — Flask sur `127.0.0.1` uniquement
 - **Headers de securite** — `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`
 - **Protection path traversal** — Verification `realpath` sur tous les chemins
 - **Validation des entrees** — Types, bornes, formats sur toutes les routes
 - **Thread safety** — `threading.Lock` sur les queues SSE, `fcntl` sur les fichiers JSON
-- **Mots de passe** — Hash scrypt (Werkzeug), jamais stockes en clair
-- **Auto-update securise** — Telechargement via API GitHub authentifiee, rollback si echec
-
----
-
-## Conventions Git
-
-- Branche principale : `main`
-- Format commit : `[type] Description (vX.Y.Z)`
-- Types : `feat`, `fix`, `refactor`, `security`, `perf`, `docs`
-- Tags annotes pour chaque version
-- Versioning semver dans `VERSION`
 
 ---
 
 ## Changelog
 
+### v3.0.0 (2026-03-24)
+- Compression PNG optimisee via **pngquant** + **oxipng** (jusqu'a -95%)
+- Support **TIFF** et **SVG**
+- Config par format : preset different par type de fichier (JPEG, PNG, WebP)
+- Estimations precises en temps reel (thumbnail pngquant)
+- Dimensions live (mise a jour quand on change le resize)
+- Reset auto des resultats quand on change les parametres
+- Barre de progression redesignee (compteur + temps restant + animation)
+- Notification macOS native a la fin de la compression
+- Correction thumbnails PNG mode palette (P/PA)
+- Niveaux JPEG recalibres (Medium: Q60, Low: Q35)
+- Simplification : retrait du systeme de profils utilisateurs
+- Accordeon dans le gestionnaire de presets
+- Raccourcis rapides (3 slots)
+
 ### v2.2.0 (2026-03-23)
-- Systeme de profils utilisateurs avec mot de passe
 - Systeme de presets complet (CRUD, categories, import/export)
 - Build DMG distribuable (PyInstaller)
-- Auto-update via GitHub Releases (telecharge + remplace + relance)
-- Bouton "enlever preset" (reset sans supprimer les fichiers)
-- Renommage de presets et categories
-- Selection multiple + tout selectionner
-- Audit securite (6 corrections : SSRF, migration mdp, cleanup)
-
-### v2.1.1 (2026-03-10)
-- Audit securite Phase 2 — 7 corrections
+- Auto-update via GitHub Releases
 
 ### v2.1.0 (2026-03-10)
-- Resize modes (largeur, hauteur, pourcentage, fit, exact)
-- Strip metadata, suffixe, lossless, estimation multi-niveaux
+- Resize modes, metadata, suffixe, lossless, estimation
 
 ### v2.0.0 (2026-03-09)
 - Refonte UI : Material Design 3, layout 2 colonnes
-- Audit securite complet
 
 ### v1.0.0 (2026-03-09)
 - Version initiale — compression PDF, JPEG, PNG, WebP
-- Interface GUI native, drag & drop, preview, historique
 
 ---
 

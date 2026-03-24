@@ -1,23 +1,18 @@
 #!/usr/bin/env python3
-"""Persistance historique, settings, presets et utilisateurs — avec file locking"""
+"""Persistance historique, settings et presets — avec file locking"""
 
 import fcntl
 import json
 import os
 import re
-import shutil
 import uuid
 from datetime import datetime
-from werkzeug.security import generate_password_hash, check_password_hash
 
 CONFIG_DIR = os.path.expanduser("~/.config/compressor")
-USERS_FILE = os.path.join(CONFIG_DIR, "users.json")
-SESSION_FILE = os.path.join(CONFIG_DIR, "session.json")
-USERS_DIR = os.path.join(CONFIG_DIR, "users")
+HISTORY_FILE = os.path.join(CONFIG_DIR, "history.json")
+SETTINGS_FILE = os.path.join(CONFIG_DIR, "settings.json")
+PRESETS_FILE = os.path.join(CONFIG_DIR, "presets.json")
 MAX_HISTORY = 500
-
-# Active user (set by login, used by _user_file)
-_active_user_id = None
 
 DEFAULT_SETTINGS = {
     "level": "medium",
@@ -39,6 +34,7 @@ DEFAULT_SETTINGS = {
     "keep_date": False,
     "lossless": False,
     "has_compressed": False,
+    "quick_presets": [None, None, None],
 }
 
 VALID_LEVELS = {"high", "medium", "low", "custom"}
@@ -54,30 +50,9 @@ PRESET_SETTINGS_KEYS = {
     "target_size_kb", "pdf_custom_dpi", "pdf_custom_quality",
 }
 
-AVATAR_COLORS = [
-    "#D0BCFF", "#CCC2DC", "#EFB8C8", "#81C784",
-    "#FFB74D", "#42A5F5", "#EF5350", "#AB47BC",
-]
-
 
 def _ensure_dir():
     os.makedirs(CONFIG_DIR, exist_ok=True)
-
-
-# ── User file path resolution ───────────────
-
-def _user_dir(user_id: str) -> str:
-    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', user_id)[:32]
-    return os.path.join(USERS_DIR, safe_id)
-
-
-def _user_file(filename: str) -> str:
-    """Return per-user file path, or root fallback if no active user."""
-    if _active_user_id:
-        d = _user_dir(_active_user_id)
-        os.makedirs(d, exist_ok=True)
-        return os.path.join(d, filename)
-    return os.path.join(CONFIG_DIR, filename)
 
 
 # ── File locking helpers ─────────────────────
@@ -99,8 +74,7 @@ def _read_json_locked(filepath: str, default=None):
 
 def _write_json_locked(filepath: str, data):
     """Écrit un fichier JSON de manière atomique (temp + rename)."""
-    parent_dir = os.path.dirname(filepath)
-    os.makedirs(parent_dir, exist_ok=True)
+    _ensure_dir()
     tmp_path = filepath + ".tmp"
     with open(tmp_path, "w") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -113,125 +87,14 @@ def _write_json_locked(filepath: str, data):
     os.replace(tmp_path, filepath)
 
 
-# ── Users ────────────────────────────────────
-
-def set_active_user(user_id):
-    global _active_user_id
-    _active_user_id = user_id
-
-
-def get_active_user_id():
-    return _active_user_id
-
-
-def load_users() -> dict:
-    return _read_json_locked(USERS_FILE, default={"version": 1, "users": []})
-
-
-def save_users(data: dict):
-    _write_json_locked(USERS_FILE, data)
-
-
-def load_session() -> dict:
-    return _read_json_locked(SESSION_FILE, default={})
-
-
-def save_session(data: dict):
-    _write_json_locked(SESSION_FILE, data)
-
-
-def create_user(name: str, password: str) -> dict:
-    data = load_users()
-    user_id = uuid.uuid4().hex[:12]
-    avatar_color = AVATAR_COLORS[len(data["users"]) % len(AVATAR_COLORS)]
-    user = {
-        "id": user_id,
-        "name": name.strip()[:30],
-        "password_hash": generate_password_hash(password),
-        "created_at": datetime.now().isoformat(),
-        "avatar_color": avatar_color,
-    }
-    data["users"].append(user)
-    save_users(data)
-    os.makedirs(_user_dir(user_id), exist_ok=True)
-    return user
-
-
-def verify_user(user_id: str, password: str) -> bool:
-    data = load_users()
-    user = next((u for u in data["users"] if u["id"] == user_id), None)
-    if not user:
-        return False
-    return check_password_hash(user["password_hash"], password)
-
-
-def update_user(user_id: str, name: str = None, password: str = None):
-    data = load_users()
-    user = next((u for u in data["users"] if u["id"] == user_id), None)
-    if not user:
-        return None
-    if name:
-        user["name"] = name.strip()[:30]
-    if password:
-        user["password_hash"] = generate_password_hash(password)
-        user.pop("must_change_password", None)  # Effacer le flag apres changement
-    save_users(data)
-    return user
-
-
-def delete_user(user_id: str):
-    data = load_users()
-    data["users"] = [u for u in data["users"] if u["id"] != user_id]
-    save_users(data)
-    user_dir = _user_dir(user_id)
-    if os.path.isdir(user_dir):
-        shutil.rmtree(user_dir, ignore_errors=True)
-
-
-def migrate_to_default_user():
-    """Migration one-shot : deplace les fichiers root vers un user par defaut."""
-    data = load_users()
-    if data.get("users"):
-        return  # Deja migre
-
-    root_settings = os.path.join(CONFIG_DIR, "settings.json")
-    root_presets = os.path.join(CONFIG_DIR, "presets.json")
-    root_history = os.path.join(CONFIG_DIR, "history.json")
-
-    has_data = any(os.path.isfile(f) for f in [root_settings, root_presets, root_history])
-    if not has_data:
-        return  # Fresh install
-
-    # Mot de passe temporaire — l'utilisateur devra le changer
-    user = create_user("Utilisateur", "compressor-temp-2024")
-    # Marquer pour forcer le changement de mot de passe
-    data = load_users()
-    for u in data["users"]:
-        if u["id"] == user["id"]:
-            u["must_change_password"] = True
-            break
-    save_users(data)
-    user_dir = _user_dir(user["id"])
-
-    for filename in ["settings.json", "presets.json", "history.json"]:
-        src = os.path.join(CONFIG_DIR, filename)
-        dst = os.path.join(user_dir, filename)
-        if os.path.isfile(src):
-            shutil.copy2(src, dst)
-            os.rename(src, src + ".bak")
-
-    save_session({"active_user_id": user["id"]})
-    set_active_user(user["id"])
-
-
 # ── History ──────────────────────────────────
 
 def load_history() -> list:
-    return _read_json_locked(_user_file("history.json"), default=[])
+    return _read_json_locked(HISTORY_FILE, default=[])
 
 
 def _save_history(entries: list):
-    _write_json_locked(_user_file("history.json"), entries[-MAX_HISTORY:])
+    _write_json_locked(HISTORY_FILE, entries[-MAX_HISTORY:])
 
 
 def add_entry(result_dict: dict) -> dict:
@@ -275,7 +138,7 @@ def get_stats() -> dict:
 # ── Settings ─────────────────────────────────
 
 def load_settings() -> dict:
-    saved = _read_json_locked(_user_file("settings.json"), default={})
+    saved = _read_json_locked(SETTINGS_FILE, default={})
     return {**DEFAULT_SETTINGS, **saved}
 
 
@@ -313,7 +176,7 @@ def save_settings(settings: dict):
     if cleaned.get("suffix") is not None:
         cleaned["suffix"] = re.sub(r'[^a-zA-Z0-9_\-. ]', '', str(cleaned["suffix"])[:50])
 
-    _write_json_locked(_user_file("settings.json"), cleaned)
+    _write_json_locked(SETTINGS_FILE, cleaned)
 
 
 # ── Presets ──────────────────────────────────
@@ -332,7 +195,7 @@ def _default_presets_data() -> dict:
 
 
 def load_presets() -> dict:
-    data = _read_json_locked(_user_file("presets.json"), default={})
+    data = _read_json_locked(PRESETS_FILE, default={})
     if not isinstance(data, dict) or "presets" not in data:
         return _default_presets_data()
     if "categories" not in data or not isinstance(data["categories"], list):
@@ -343,7 +206,7 @@ def load_presets() -> dict:
 
 
 def save_presets(data: dict):
-    _write_json_locked(_user_file("presets.json"), data)
+    _write_json_locked(PRESETS_FILE, data)
 
 
 def validate_preset_settings(settings: dict) -> dict:

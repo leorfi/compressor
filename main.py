@@ -27,9 +27,6 @@ from history import (
     add_entry, get_history, clear_history,
     get_stats, load_settings, save_settings,
     load_presets, save_presets, validate_preset_settings, generate_preset_id,
-    load_users, save_users, create_user, verify_user, update_user, delete_user,
-    load_session, save_session, set_active_user, get_active_user_id,
-    migrate_to_default_user,
 )
 
 # ──────────────────────────────────────────────
@@ -107,16 +104,31 @@ def _broadcast(data: dict):
             state.progress_queues.remove(q)
 
 
-def _notify(title: str, message: str):
+def _notify(title: str, message: str, open_path: str = None):
     try:
         settings = load_settings()
         if not settings.get("notifications_enabled", True):
             return
+
+        sent = False
+
+        # Méthode 1 : terminal-notifier (supporte clic → ouvrir dossier)
         if os.path.isfile(NOTIFIER):
-            subprocess.run(
-                [NOTIFIER, "-title", title, "-message", message, "-sound", "default"],
-                timeout=10,
-            )
+            cmd = [NOTIFIER, "-title", title, "-message", message,
+                   "-sound", "default", "-sender", "com.apple.Terminal"]
+            if open_path:
+                cmd += ["-open", f"file://{open_path}"]
+            r = subprocess.run(cmd, timeout=10, capture_output=True)
+            sent = r.returncode == 0
+
+        # Méthode 2 : osascript (natif, toujours dispo)
+        if not sent:
+            safe_title = title.replace('"', '\\"').replace("'", "\\'")
+            safe_msg = message.replace('"', '\\"').replace("'", "\\'")
+            subprocess.run([
+                "osascript", "-e",
+                f'display notification "{safe_msg}" with title "{safe_title}" sound name "default"'
+            ], timeout=10)
     except Exception:
         pass
 
@@ -255,8 +267,18 @@ def api_estimate():
 
     strip_metadata = bool(s.get("strip_metadata", False))
 
-    # Estimer pour chaque niveau
-    levels_to_estimate = ["high", "medium", "low", "custom"]
+    target_size_kb = None
+    if s.get("target_size_kb"):
+        try:
+            target_size_kb = max(1, int(s["target_size_kb"]))
+        except (ValueError, TypeError):
+            target_size_kb = None
+
+    # Estimer seulement le niveau actif (les labels globaux sont masques)
+    active_level = s.get("active_level", "medium")
+    if active_level not in ("high", "medium", "low", "custom"):
+        active_level = "medium"
+    levels_to_estimate = [active_level]
     results = {}
 
     for path in paths:
@@ -280,6 +302,7 @@ def api_estimate():
                 resize_percent=resize_percent,
                 strip_metadata=strip_metadata,
                 lossless=lossless,
+                target_size_kb=target_size_kb,
             )
             est = estimate_file(path, settings)
             file_estimates[level] = est
@@ -390,6 +413,13 @@ def api_compress():
         except (ValueError, TypeError):
             pdf_custom_quality = custom_q
 
+    # Source root dir pour export structure
+    source_root_dir = data.get("source_root_dir") or None
+    if source_root_dir:
+        source_root_dir = os.path.realpath(source_root_dir)
+        if not os.path.isdir(source_root_dir):
+            source_root_dir = None
+
     settings = CompressionSettings(
         level=level,
         custom_quality=pdf_custom_quality if (out_fmt == "pdf" and level == "custom") else custom_q,
@@ -406,7 +436,52 @@ def api_compress():
         suffix=suffix,
         keep_date=keep_date,
         lossless=lossless,
+        source_root_dir=source_root_dir,
     )
+
+    # Per-format settings (from format config modal)
+    format_settings_map = {}  # {"jpeg": CompressionSettings(...), ...}
+    raw_format_settings = data.get("format_settings", {})
+    if isinstance(raw_format_settings, dict):
+        for fmt, fmt_s in raw_format_settings.items():
+            if not isinstance(fmt_s, dict):
+                continue
+            fmt_level = fmt_s.get("level", level)
+            if fmt_level not in ("high", "medium", "low", "custom"):
+                fmt_level = "medium"
+            fmt_cq = max(1, min(100, int(fmt_s.get("custom_quality", 70))))
+            fmt_out = fmt_s.get("output_format") or None
+            fmt_resize = fmt_s.get("resize_mode", "none")
+            fmt_rw = None
+            if fmt_s.get("resize_width"):
+                try: fmt_rw = max(1, min(10000, int(fmt_s["resize_width"])))
+                except: pass
+            fmt_rh = None
+            if fmt_s.get("resize_height"):
+                try: fmt_rh = max(1, min(10000, int(fmt_s["resize_height"])))
+                except: pass
+            fmt_rp = max(1, min(100, int(fmt_s.get("resize_percent", 100))))
+            fmt_suffix = fmt_s.get("suffix", suffix)
+            if fmt_suffix:
+                fmt_suffix = fmt_suffix.replace("/", "").replace("\\", "").replace("..", "")
+
+            format_settings_map[fmt] = CompressionSettings(
+                level=fmt_level,
+                custom_quality=fmt_cq,
+                max_resolution=max_res,
+                output_format=fmt_out,
+                target_size_kb=fmt_s.get("target_size_kb"),
+                output_dir=output_dir,
+                resize_mode=fmt_resize,
+                resize_width=fmt_rw,
+                resize_height=fmt_rh,
+                resize_percent=fmt_rp,
+                strip_metadata=fmt_s.get("strip_metadata", False),
+                suffix=fmt_suffix if fmt_suffix else "",
+                keep_date=fmt_s.get("keep_date", False),
+                lossless=fmt_s.get("lossless", False),
+                source_root_dir=source_root_dir,
+            )
 
     def run():
         state.compression_active = True
@@ -450,6 +525,7 @@ def api_compress():
                             suffix=lvl_suffix,
                             keep_date=keep_date,
                             lossless=False,
+                            source_root_dir=source_root_dir,
                         )
                         _broadcast({
                             "type": "file_start", "index": global_index, "total": total,
@@ -486,6 +562,10 @@ def api_compress():
                 total = len(files)
                 for i, fpath in enumerate(files):
                     fname = os.path.basename(fpath)
+                    # Choisir les settings selon le format du fichier
+                    file_fmt = detect_format(fpath)
+                    file_settings = format_settings_map.get(file_fmt, settings)
+
                     _broadcast({"type": "file_start", "index": i, "total": total, "filename": fname})
                     try:
                         def page_cb(page, total_pages, _i=i):
@@ -494,8 +574,8 @@ def api_compress():
                                 "file_index": _i, "page": page, "total_pages": total_pages,
                             })
 
-                        result = compress_file(fpath, settings, progress_cb=page_cb)
-                        result.level = settings.level
+                        result = compress_file(fpath, file_settings, progress_cb=page_cb)
+                        result.level = file_settings.level
                         add_entry(result.to_dict())
                         results.append(result.to_dict())
                         _broadcast({"type": "file_done", "index": i, "total": total, "result": result.to_dict()})
@@ -515,6 +595,7 @@ def api_compress():
             _notify(
                 "Compression terminee",
                 f"{len(results)} fichier(s) — {saved_mb:.1f} MB economises",
+                open_path=batch_output_dir,
             )
         except Exception:
             logger.exception("Erreur fatale dans le thread de compression")
@@ -725,109 +806,8 @@ def api_rename_category():
 
 
 # ──────────────────────────────────────────────
-#  User API
+#  Presets Import/Export (below)
 # ──────────────────────────────────────────────
-
-@app.route("/api/users/status", methods=["GET"])
-def api_user_status():
-    data = load_users()
-    has_users = len(data.get("users", [])) > 0
-    active_id = get_active_user_id()
-    active_user = None
-    if active_id:
-        u = next((u for u in data["users"] if u["id"] == active_id), None)
-        if u:
-            active_user = {k: v for k, v in u.items() if k != "password_hash"}
-    return jsonify({"has_users": has_users, "active_user": active_user})
-
-
-@app.route("/api/users", methods=["GET"])
-def api_get_users():
-    data = load_users()
-    users = [{k: v for k, v in u.items() if k != "password_hash"} for u in data.get("users", [])]
-    return jsonify({"users": users, "active_user_id": get_active_user_id()})
-
-
-@app.route("/api/users", methods=["POST"])
-def api_create_user():
-    body = request.get_json(silent=True) or {}
-    name = str(body.get("name", "")).strip()
-    password = str(body.get("password", ""))
-    if not name:
-        return jsonify({"error": "Nom requis"}), 400
-    if len(name) > 30:
-        return jsonify({"error": "Nom trop long (max 30)"}), 400
-    if len(password) < 4:
-        return jsonify({"error": "Mot de passe trop court (min 4 caracteres)"}), 400
-    if len(password) > 100:
-        return jsonify({"error": "Mot de passe trop long"}), 400
-
-    user = create_user(name, password)
-    set_active_user(user["id"])
-    save_session({"active_user_id": user["id"]})
-    safe_user = {k: v for k, v in user.items() if k != "password_hash"}
-    return jsonify({"ok": True, "user": safe_user})
-
-
-@app.route("/api/users/login", methods=["POST"])
-def api_login():
-    body = request.get_json(silent=True) or {}
-    user_id = str(body.get("user_id", ""))
-    password = str(body.get("password", ""))
-
-    if not verify_user(user_id, password):
-        return jsonify({"error": "Mot de passe incorrect"}), 401
-
-    set_active_user(user_id)
-    save_session({"active_user_id": user_id})
-
-    data = load_users()
-    user = next((u for u in data["users"] if u["id"] == user_id), None)
-    safe_user = {k: v for k, v in user.items() if k != "password_hash"} if user else None
-    must_change = user.get("must_change_password", False) if user else False
-    return jsonify({"ok": True, "user": safe_user, "must_change_password": must_change})
-
-
-@app.route("/api/users/logout", methods=["POST"])
-def api_logout():
-    set_active_user(None)
-    save_session({"active_user_id": None})
-    return jsonify({"ok": True})
-
-
-@app.route("/api/users/<user_id>", methods=["PUT"])
-def api_update_user(user_id):
-    body = request.get_json(silent=True) or {}
-    current_pw = str(body.get("current_password", ""))
-    if not verify_user(user_id, current_pw):
-        return jsonify({"error": "Mot de passe actuel incorrect"}), 401
-
-    name = body.get("name")
-    new_password = body.get("new_password")
-    user = update_user(user_id, name=name, password=new_password)
-    if not user:
-        return jsonify({"error": "Utilisateur introuvable"}), 404
-
-    safe_user = {k: v for k, v in user.items() if k != "password_hash"}
-    return jsonify({"ok": True, "user": safe_user})
-
-
-@app.route("/api/users/<user_id>", methods=["DELETE"])
-def api_delete_user(user_id):
-    body = request.get_json(silent=True) or {}
-    password = str(body.get("password", ""))
-
-    if not verify_user(user_id, password):
-        return jsonify({"error": "Mot de passe incorrect"}), 401
-
-    delete_user(user_id)
-
-    if get_active_user_id() == user_id:
-        set_active_user(None)
-        save_session({"active_user_id": None})
-
-    return jsonify({"ok": True})
-
 
 # ──────────────────────────────────────────────
 #  Presets Import/Export
@@ -1304,7 +1284,11 @@ def api_thumbnail():
             try:
                 img.thumbnail((size, size), Image.LANCZOS)
                 buf = BytesIO()
-                fmt = "PNG" if img.mode == "RGBA" else "JPEG"
+                # PNG pour les modes avec transparence ou palette
+                needs_png = img.mode in ("RGBA", "P", "PA", "LA")
+                fmt = "PNG" if needs_png else "JPEG"
+                if fmt == "JPEG" and img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
                 content_type = f"image/{fmt.lower()}"
                 img.save(buf, format=fmt, quality=92)
                 img_bytes = buf.getvalue()
@@ -1438,14 +1422,6 @@ def _set_dock_icon():
 
 
 def start_app():
-    # Migration + session restore
-    migrate_to_default_user()
-    session_data = load_session()
-    if session_data.get("active_user_id"):
-        users_data = load_users()
-        if any(u["id"] == session_data["active_user_id"] for u in users_data.get("users", [])):
-            set_active_user(session_data["active_user_id"])
-
     port = find_port()
     api = Api()
 
