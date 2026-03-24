@@ -57,6 +57,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setupCompareSlider();
     setupZoom();
     setupOpenFolderButton();
+    setupRenameTemplate();
     setupPresets();
     setupQuickPresets();
     setupPresetsModal();
@@ -263,6 +264,90 @@ function clearFiles() {
 }
 
 // ── Open Folder Button ────────────────────
+
+// ── Rename Template ──────────────────────
+
+function setupRenameTemplate() {
+    const input = document.getElementById("rename-template");
+    const preview = document.getElementById("rename-preview");
+
+    // Tags cliquables → insèrent dans l'input
+    document.querySelectorAll(".rename-tag").forEach(tag => {
+        tag.addEventListener("click", () => {
+            const pos = input.selectionStart || input.value.length;
+            const val = input.value;
+            const insert = tag.dataset.tag;
+            input.value = val.slice(0, pos) + insert + val.slice(pos);
+            input.focus();
+            input.setSelectionRange(pos + insert.length, pos + insert.length);
+            updateRenamePreview();
+        });
+    });
+
+    // Preview live
+    input.addEventListener("input", updateRenamePreview);
+    document.getElementById("rename-clean").addEventListener("change", updateRenamePreview);
+}
+
+function updateRenamePreview() {
+    const template = document.getElementById("rename-template").value;
+    const preview = document.getElementById("rename-preview");
+
+    if (!template || state.files.length === 0) {
+        preview.classList.add("hidden");
+        return;
+    }
+
+    // Prendre le premier fichier comme exemple
+    const file = state.files[0];
+    const result = resolveRenameTemplate(template, file, 0);
+    preview.textContent = result + "." + (file.format || "png");
+    preview.classList.remove("hidden");
+}
+
+function resolveRenameTemplate(template, file, index) {
+    const clean = document.getElementById("rename-clean").checked;
+    const ext = file.format || "png";
+    let baseName = file.name.replace(/\.[^.]+$/, ""); // sans extension
+
+    if (clean) {
+        baseName = cleanFilename(baseName);
+    }
+
+    const dims = file.dimensions || {};
+    const w = dims.width || "?";
+    const h = dims.height || "?";
+    const folder = file.relativePath ? file.relativePath.split("/").slice(-2, -1)[0] || "" : "";
+    const today = new Date().toISOString().slice(0, 10);
+
+    let result = template;
+    result = result.replace(/\{nom\}/gi, baseName);
+    result = result.replace(/\{index\}/gi, String(index + 1).padStart(2, "0"));
+    result = result.replace(/\{largeur\}/gi, String(w));
+    result = result.replace(/\{hauteur\}/gi, String(h));
+    result = result.replace(/\{dossier\}/gi, folder);
+    result = result.replace(/\{date\}/gi, today);
+    result = result.replace(/\{format\}/gi, ext);
+
+    return result;
+}
+
+function cleanFilename(name) {
+    // Retirer les caractères non-latins (chinois, etc.)
+    let cleaned = name.replace(/[^\x00-\x7F]/g, "");
+    // Remplacer espaces et underscores par des tirets
+    cleaned = cleaned.replace(/[\s_]+/g, "-");
+    // Retirer les caractères spéciaux sauf tirets et points
+    cleaned = cleaned.replace(/[^a-zA-Z0-9\-\.]/g, "");
+    // Fusionner les tirets multiples
+    cleaned = cleaned.replace(/-{2,}/g, "-");
+    // Retirer tirets en début/fin
+    cleaned = cleaned.replace(/^-+|-+$/g, "");
+    // Minuscules
+    cleaned = cleaned.toLowerCase();
+    return cleaned || "image";
+}
+
 
 function setupOpenFolderButton() {
     document.getElementById("open-folder-btn").addEventListener("click", async () => {
@@ -1121,6 +1206,9 @@ function gatherSettings() {
         // PDF custom
         pdf_custom_dpi: parseInt(document.getElementById("pdf-custom-dpi").value) || 150,
         pdf_custom_quality: parseInt(document.getElementById("pdf-custom-quality").value) || 70,
+        // Rename
+        rename_template: document.getElementById("rename-template").value || "",
+        rename_clean: document.getElementById("rename-clean").checked,
     };
 }
 
@@ -1250,6 +1338,9 @@ function resetFieldsToDefaults() {
     document.getElementById("lossless-toggle").checked = false;
 
     // Export
+    document.getElementById("rename-template").value = "";
+    document.getElementById("rename-clean").checked = true;
+    document.getElementById("rename-preview").classList.add("hidden");
     document.getElementById("output-suffix").value = "";
     document.getElementById("keep-date").checked = false;
     document.getElementById("output-dir").value = "";

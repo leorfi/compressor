@@ -321,6 +321,63 @@ def api_estimate():
     return jsonify({"estimates": results, "totals": totals})
 
 
+def _apply_rename_template(template, src_path, index, total, output_path, clean=True):
+    """Applique un template de renommage. Retourne le nouveau nom de fichier complet."""
+    try:
+        base_name = os.path.splitext(os.path.basename(src_path))[0]
+        out_ext = os.path.splitext(output_path)[1]  # .png, .jpg, etc.
+
+        if clean:
+            base_name = _clean_filename(base_name)
+
+        # Dimensions du fichier de sortie
+        w, h = "0", "0"
+        try:
+            from PIL import Image
+            with Image.open(output_path) as img:
+                w, h = str(img.width), str(img.height)
+        except Exception:
+            pass
+
+        folder = os.path.basename(os.path.dirname(src_path))
+        today = datetime.now().strftime("%Y-%m-%d")
+        fmt = out_ext.lstrip(".").lower()
+
+        result = template
+        result = re.sub(r'\{nom\}', base_name, result, flags=re.IGNORECASE)
+        result = re.sub(r'\{index\}', str(index + 1).zfill(2), result, flags=re.IGNORECASE)
+        result = re.sub(r'\{largeur\}', w, result, flags=re.IGNORECASE)
+        result = re.sub(r'\{hauteur\}', h, result, flags=re.IGNORECASE)
+        result = re.sub(r'\{dossier\}', folder, result, flags=re.IGNORECASE)
+        result = re.sub(r'\{date\}', today, result, flags=re.IGNORECASE)
+        result = re.sub(r'\{format\}', fmt, result, flags=re.IGNORECASE)
+
+        # Sanitize le résultat final
+        result = re.sub(r'[<>:"/\\|?*]', '', result)
+        if not result.strip():
+            return None
+        return result.strip() + out_ext
+    except Exception:
+        return None
+
+
+def _clean_filename(name):
+    """Nettoie un nom de fichier : retire caractères non-latins, normalise."""
+    # Retirer les caractères non-ASCII (chinois, etc.)
+    cleaned = re.sub(r'[^\x00-\x7F]', '', name)
+    # Espaces et underscores → tirets
+    cleaned = re.sub(r'[\s_]+', '-', cleaned)
+    # Garder alphanum, tirets, points
+    cleaned = re.sub(r'[^a-zA-Z0-9\-.]', '', cleaned)
+    # Fusionner tirets multiples
+    cleaned = re.sub(r'-{2,}', '-', cleaned)
+    # Retirer tirets début/fin
+    cleaned = cleaned.strip('-')
+    # Minuscules
+    cleaned = cleaned.lower()
+    return cleaned or "image"
+
+
 @app.route("/api/compress", methods=["POST"])
 def api_compress():
     if state.compression_active:
@@ -391,7 +448,7 @@ def api_compress():
             resize_percent = 100
 
     strip_metadata = bool(s.get("strip_metadata", False))
-    raw_suffix = str(s.get("suffix", "_compressed"))[:50]
+    raw_suffix = str(s.get("suffix", ""))[:50]
     # Sanitize : garder uniquement alphanum, -, _, . et espaces
     suffix = re.sub(r'[^a-zA-Z0-9_\-. ]', '', raw_suffix)
     keep_date = bool(s.get("keep_date", False))
@@ -412,6 +469,10 @@ def api_compress():
             pdf_custom_quality = max(1, min(100, int(s["pdf_custom_quality"])))
         except (ValueError, TypeError):
             pdf_custom_quality = custom_q
+
+    # Rename template
+    rename_template = str(s.get("rename_template", ""))[:100]
+    rename_clean = bool(s.get("rename_clean", True))
 
     # Source root dir pour export structure
     source_root_dir = data.get("source_root_dir") or None
@@ -576,6 +637,24 @@ def api_compress():
 
                         result = compress_file(fpath, file_settings, progress_cb=page_cb)
                         result.level = file_settings.level
+
+                        # Renommage par lot
+                        if rename_template and result.output_path and os.path.isfile(result.output_path):
+                            new_name = _apply_rename_template(
+                                rename_template, fpath, i, total,
+                                result.output_path, rename_clean
+                            )
+                            if new_name:
+                                new_path = os.path.join(os.path.dirname(result.output_path), new_name)
+                                # Eviter écrasement
+                                base, ext = os.path.splitext(new_path)
+                                counter = 1
+                                while os.path.exists(new_path) and new_path != result.output_path:
+                                    new_path = f"{base}-{counter}{ext}"
+                                    counter += 1
+                                os.rename(result.output_path, new_path)
+                                result.output_path = new_path
+
                         add_entry(result.to_dict())
                         results.append(result.to_dict())
                         _broadcast({"type": "file_done", "index": i, "total": total, "result": result.to_dict()})

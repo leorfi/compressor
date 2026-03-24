@@ -299,6 +299,27 @@
                             <svg class="side-sheet__chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
                         </button>
                         <div class="side-sheet__section-body">
+                            <!-- Rename Template -->
+                            <div class="field">
+                                <label class="field__label">Renommage par lot</label>
+                                <input type="text" id="rename-template" class="field__input" value="" maxlength="100" placeholder="Laisser vide = nom original">
+                                <div class="rename-tags">
+                                    <button type="button" class="rename-tag" data-tag="{nom}">nom</button>
+                                    <button type="button" class="rename-tag" data-tag="{index}">index</button>
+                                    <button type="button" class="rename-tag" data-tag="{largeur}">largeur</button>
+                                    <button type="button" class="rename-tag" data-tag="{hauteur}">hauteur</button>
+                                    <button type="button" class="rename-tag" data-tag="{dossier}">dossier</button>
+                                    <button type="button" class="rename-tag" data-tag="{date}">date</button>
+                                </div>
+                                <div class="field__row field__row--between" style="margin-top:6px">
+                                    <label class="field__hint" style="margin:0">Nettoyer les noms</label>
+                                    <label class="switch switch--sm">
+                                        <input type="checkbox" id="rename-clean" checked>
+                                        <span class="switch__track"></span>
+                                    </label>
+                                </div>
+                                <span id="rename-preview" class="field__hint rename-preview hidden"></span>
+                            </div>
                             <!-- Suffix -->
                             <div class="field">
                                 <label class="field__label">Suffixe du fichier</label>
