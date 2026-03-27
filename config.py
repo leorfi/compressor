@@ -13,17 +13,21 @@ else:
     APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Fix SSL certificates pour PyInstaller (macOS bundle)
-# Sans ça, les requêtes HTTPS (GitHub API, updates) échouent avec SSL_CERT_VERIFY_FAILED
+# urllib.request ne lit PAS SSL_CERT_FILE — il faut patcher le contexte SSL par defaut
+_ssl_cert_file = None
 try:
     import certifi
-    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
-    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+    _ssl_cert_file = certifi.where()
 except ImportError:
-    # Fallback : utiliser les certs système macOS
     _macos_certs = "/etc/ssl/cert.pem"
     if os.path.isfile(_macos_certs):
-        os.environ.setdefault("SSL_CERT_FILE", _macos_certs)
-        os.environ.setdefault("REQUESTS_CA_BUNDLE", _macos_certs)
+        _ssl_cert_file = _macos_certs
+
+if _ssl_cert_file:
+    os.environ["SSL_CERT_FILE"] = _ssl_cert_file
+    os.environ["REQUESTS_CA_BUNDLE"] = _ssl_cert_file
+    # Patch le contexte SSL par defaut pour urllib.request
+    ssl._create_default_https_context = lambda: ssl.create_default_context(cafile=_ssl_cert_file)
 ENV_FILE = os.path.join(APP_DIR, ".env")
 
 

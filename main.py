@@ -353,10 +353,14 @@ def _apply_rename_template(template, src_path, index, total, output_path, clean=
         result = re.sub(r'\{format\}', fmt, result, flags=re.IGNORECASE)
 
         # Sanitize le résultat final
-        result = re.sub(r'[<>:"/\\|?*]', '', result)
-        if not result.strip():
+        result = re.sub(r'[<>:"/\\|?*]', '', result).strip()
+        if not result:
             return None
-        return result.strip() + out_ext
+        # Si le template contient deja une extension, ne pas en rajouter
+        _, template_ext = os.path.splitext(result)
+        if template_ext and template_ext.lower() in ('.jpg', '.jpeg', '.png', '.webp', '.pdf', '.tif', '.tiff', '.svg'):
+            return result
+        return result + out_ext
     except Exception:
         return None
 
@@ -474,6 +478,9 @@ def api_compress():
     rename_template = str(s.get("rename_template", ""))[:100]
     rename_clean = bool(s.get("rename_clean", True))
 
+    # Compression adaptative
+    adaptive_compression = bool(s.get("adaptive_compression", False))
+
     # Folder bac settings (per-folder rename + preset)
     raw_folder_settings = data.get("folder_settings", {})
     folder_settings_map = {}  # { "Accessoires": { rename_template, preset_settings } }
@@ -492,6 +499,15 @@ def api_compress():
         source_root_dir = os.path.realpath(source_root_dir)
         if not os.path.isdir(source_root_dir):
             source_root_dir = None
+
+    # Mapping fichier → dossier bac (pour les assignations manuelles par drag&drop)
+    # Stocker avec plusieurs variantes du chemin pour assurer le match
+    raw_ftf = data.get("file_to_folder", {})
+    file_to_folder = {}
+    for k, v in raw_ftf.items():
+        file_to_folder[k] = v
+        file_to_folder[os.path.realpath(k)] = v
+        file_to_folder[os.path.normpath(k)] = v
 
     settings = CompressionSettings(
         level=level,
@@ -643,7 +659,10 @@ def api_compress():
                     # Per-folder bac: override rename_template + settings
                     file_folder = None
                     file_rename_template = rename_template
-                    if source_root_dir:
+                    # Mapping explicite (prioritaire - couvre drag&drop et dossier source)
+                    file_folder = file_to_folder.get(fpath) or file_to_folder.get(os.path.realpath(fpath)) or file_to_folder.get(os.path.normpath(fpath))
+                    # Fallback: extraire depuis source_root_dir (seulement si pas de mapping explicite)
+                    if not file_folder and source_root_dir and not file_to_folder:
                         rel = os.path.relpath(fpath, source_root_dir)
                         parts = rel.split(os.sep)
                         if len(parts) > 1:
@@ -652,6 +671,10 @@ def api_compress():
                         fs = folder_settings_map[file_folder]
                         if fs.get("rename_template"):
                             file_rename_template = fs["rename_template"]
+                            # Quand un template de bac est defini, pas de suffixe
+                            import copy
+                            file_settings = copy.copy(file_settings)
+                            file_settings.suffix = ""
                         if fs.get("preset_settings"):
                             # Build per-folder settings (same logic as format_settings_map)
                             ps = fs["preset_settings"]
@@ -674,6 +697,27 @@ def api_compress():
                                 source_root_dir=file_settings.source_root_dir,
                             )
 
+                    # Compression adaptative : ajuster le niveau selon la taille du fichier
+                    if adaptive_compression:
+                        try:
+                            file_size_mb = os.path.getsize(fpath) / (1024 * 1024)
+                        except OSError:
+                            file_size_mb = 0
+                        import copy
+                        file_settings = copy.copy(file_settings)
+                        if file_size_mb > 10:
+                            file_settings.level = "low"
+                            file_settings.custom_quality = 35
+                        elif file_size_mb > 3:
+                            file_settings.level = "medium"
+                            file_settings.custom_quality = 60
+                        elif file_size_mb > 1:
+                            file_settings.level = "high"
+                            file_settings.custom_quality = 80
+                        else:
+                            file_settings.level = "high"
+                            file_settings.custom_quality = 90
+
                     _broadcast({"type": "file_start", "index": i, "total": total, "filename": fname})
                     try:
                         def page_cb(page, total_pages, _i=i):
@@ -685,29 +729,51 @@ def api_compress():
                         result = compress_file(fpath, file_settings, progress_cb=page_cb)
                         result.level = file_settings.level
 
-                        # Renommage par lot
-                        if file_rename_template and result.output_path and os.path.isfile(result.output_path):
-                            # Per-folder index (reset par dossier)
-                            folder_key = file_folder or "__global__"
-                            if folder_key not in folder_index_counters:
-                                folder_index_counters[folder_key] = 0
-                            file_index = folder_index_counters[folder_key]
-                            folder_index_counters[folder_key] += 1
+                        # Renommage par lot + placement dans sous-dossier bac
+                        if result.output_path and os.path.isfile(result.output_path):
+                            output_dir_for_file = os.path.dirname(result.output_path)
+                            needs_move = False
 
-                            new_name = _apply_rename_template(
-                                file_rename_template, fpath, file_index, total,
-                                result.output_path, rename_clean
-                            )
-                            if new_name:
-                                new_path = os.path.join(os.path.dirname(result.output_path), new_name)
-                                # Eviter écrasement
-                                base, ext = os.path.splitext(new_path)
-                                counter = 1
-                                while os.path.exists(new_path) and new_path != result.output_path:
-                                    new_path = f"{base}-{counter}{ext}"
-                                    counter += 1
-                                os.rename(result.output_path, new_path)
-                                result.output_path = new_path
+                            # Creer le sous-dossier si le fichier est dans un bac
+                            if file_folder:
+                                output_dir_for_file = os.path.join(output_dir_for_file, file_folder)
+                                os.makedirs(output_dir_for_file, exist_ok=True)
+                                needs_move = True
+
+                            # Renommage si template defini
+                            if file_rename_template:
+                                folder_key = file_folder or "__global__"
+                                if folder_key not in folder_index_counters:
+                                    folder_index_counters[folder_key] = 0
+                                file_index = folder_index_counters[folder_key]
+                                folder_index_counters[folder_key] += 1
+
+                                new_name = _apply_rename_template(
+                                    file_rename_template, fpath, file_index, total,
+                                    result.output_path, rename_clean
+                                )
+                                if new_name:
+                                    new_path = os.path.join(output_dir_for_file, new_name)
+                                    base, ext = os.path.splitext(new_path)
+                                    counter = 1
+                                    while os.path.exists(new_path) and new_path != result.output_path:
+                                        new_path = f"{base}-{counter}{ext}"
+                                        counter += 1
+                                    os.rename(result.output_path, new_path)
+                                    result.output_path = new_path
+                                    needs_move = False  # deja deplace par le rename
+
+                            # Deplacer dans le sous-dossier (sans renommage)
+                            if needs_move:
+                                new_path = os.path.join(output_dir_for_file, os.path.basename(result.output_path))
+                                if new_path != result.output_path:
+                                    base, ext = os.path.splitext(new_path)
+                                    counter = 1
+                                    while os.path.exists(new_path):
+                                        new_path = f"{base}-{counter}{ext}"
+                                        counter += 1
+                                    os.rename(result.output_path, new_path)
+                                    result.output_path = new_path
 
                         add_entry(result.to_dict())
                         results.append(result.to_dict())
@@ -724,6 +790,9 @@ def api_compress():
             batch_output_dir = None
             if results:
                 batch_output_dir = os.path.dirname(results[0].get("output_path", ""))
+                # Si des bacs sont utilises, remonter d'un niveau (au-dessus des sous-dossiers)
+                if folder_settings_map or file_to_folder:
+                    batch_output_dir = os.path.dirname(batch_output_dir)
             _broadcast({"type": "batch_done", "count": len(results), "saved_mb": round(saved_mb, 1), "output_dir": batch_output_dir})
             _notify(
                 "Compression terminee",
@@ -1026,19 +1095,26 @@ def _github_api_request(path: str):
 
 
 def _github_download_asset(asset_url: str, dest_path: str):
-    """Telecharge un asset GitHub (gere l'auth pour repos prives)."""
+    """Telecharge un asset GitHub (browser_download_url ou API URL)."""
     import urllib.request
-    headers = {"Accept": "application/octet-stream"}
+    headers = {}
+    if "api.github.com" in asset_url:
+        # API URL — besoin du header octet-stream
+        headers["Accept"] = "application/octet-stream"
     if config.GITHUB_TOKEN:
         headers["Authorization"] = f"token {config.GITHUB_TOKEN}"
     req = urllib.request.Request(asset_url, headers=headers)
     with urllib.request.urlopen(req, timeout=300) as resp:
+        total = int(resp.headers.get("Content-Length", 0))
+        downloaded = 0
         with open(dest_path, "wb") as f:
             while True:
-                chunk = resp.read(8192)
+                chunk = resp.read(65536)  # 64KB chunks (plus rapide)
                 if not chunk:
                     break
                 f.write(chunk)
+                downloaded += len(chunk)
+        logger.info("Telecharge %s (%d KB)", os.path.basename(dest_path), downloaded // 1024)
 
 
 # Cache la derniere release pour eviter de re-fetcher entre check et apply
@@ -1141,7 +1217,8 @@ def api_updates_apply():
             asset_name = "Compressor-update.dmg"
             for asset in release.get("assets", []):
                 if asset.get("name", "").endswith(".dmg"):
-                    asset_url = asset.get("url")  # API URL (pas browser URL)
+                    # Preferer browser_download_url (pas besoin d'auth pour repo public)
+                    asset_url = asset.get("browser_download_url") or asset.get("url")
                     asset_name = asset["name"]
                     break
             if not asset_url:

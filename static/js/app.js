@@ -62,6 +62,61 @@ document.addEventListener("DOMContentLoaded", () => {
     setupOpenFolderButton();
     setupRenameTemplate();
     document.getElementById("bacs-import-csv").addEventListener("click", importBacsCSV);
+    document.getElementById("bacs-add").addEventListener("click", addManualBac);
+    document.getElementById("bacs-open-export").addEventListener("click", () => {
+        if (state.lastOutputDir) {
+            fetch("/api/open-folder", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ path: state.lastOutputDir }),
+            });
+        }
+    });
+    document.getElementById("bacs-clear-all").addEventListener("click", () => {
+        state.folderBacs = {};
+        state.activeBac = null;
+        for (const f of state.files) {
+            delete f.relativePath;
+        }
+        document.getElementById("bacs-export-done").classList.add("hidden");
+        renderFolderBacs();
+        renderFiles();
+        showSnackbar("Tous les dossiers supprimes");
+    });
+    document.getElementById("toggle-bacs-btn").addEventListener("click", () => {
+        const bacs = document.getElementById("folder-bacs");
+        const handle = document.getElementById("bacs-resize-handle");
+        const isHidden = bacs.classList.toggle("hidden");
+        handle.classList.toggle("hidden", isHidden);
+        if (!isHidden && Object.keys(state.folderBacs).length === 0) {
+            addManualBac();
+        }
+    });
+
+    // Resize handle drag
+    const resizeHandle = document.getElementById("bacs-resize-handle");
+    let resizing = false;
+    resizeHandle.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        resizing = true;
+        resizeHandle.classList.add("dragging");
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+    });
+    document.addEventListener("mousemove", (e) => {
+        if (!resizing) return;
+        const sidebar = document.getElementById("folder-bacs");
+        const newWidth = Math.max(160, Math.min(500, e.clientX));
+        sidebar.style.width = newWidth + "px";
+        sidebar.style.minWidth = newWidth + "px";
+    });
+    document.addEventListener("mouseup", () => {
+        if (!resizing) return;
+        resizing = false;
+        resizeHandle.classList.remove("dragging");
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+    });
     setupPresets();
     setupQuickPresets();
     setupPresetsModal();
@@ -81,8 +136,10 @@ function setupDropZone() {
     const clearBtn = document.getElementById("clear-files-btn");
 
     // Drop global — fonctionne partout dans la fenetre (zone vide + liste de fichiers)
+    // Skip drag-over styling for internal drags (card → bac)
     document.addEventListener("dragover", (e) => {
         e.preventDefault();
+        if (state._internalDrag) return;
         if (!zone.classList.contains("hidden")) {
             zone.classList.add("drag-over");
         } else if (!fileContainer.classList.contains("hidden")) {
@@ -99,6 +156,8 @@ function setupDropZone() {
         e.preventDefault();
         zone.classList.remove("drag-over");
         fileContainer.classList.remove("drag-over");
+        // Ignorer les drags internes (card → bac)
+        if (state._internalDrag) { state._internalDrag = false; return; }
         state.justDropped = true;
         setTimeout(() => { state.justDropped = false; }, DROP_DEBOUNCE_MS);
         handleDrop(e);
@@ -407,16 +466,34 @@ function renderFolderBacs() {
             : "Reglages globaux";
         const ruleDisplay = bac.renameTemplate || "Nom original";
 
+        // Calculer la progression par bac
+        const bacFiles = state.files.filter(f => {
+            if (!f.relativePath) return false;
+            return f.relativePath.split("/")[0] === name;
+        });
+        const doneCount = bacFiles.filter(f => f.result || f.status === "done").length;
+        const errorCount = bacFiles.filter(f => f.status === "error").length;
+        const totalBac = bacFiles.length;
+        const progressPct = totalBac > 0 ? Math.round((doneCount + errorCount) / totalBac * 100) : 0;
+        const isCompressing = state.compressing && totalBac > 0 && (doneCount + errorCount) < totalBac;
+        const isDone = state.compressing && totalBac > 0 && (doneCount + errorCount) >= totalBac;
+
         return `
-            <div class="folder-bac ${isActive ? 'active' : ''}" data-folder="${escapeHtml(name)}">
+            <div class="folder-bac ${isActive ? 'active' : ''} ${isDone ? 'done' : ''}" data-folder="${escapeHtml(name)}">
                 <div class="folder-bac__info">
                     <span class="folder-bac__name">${escapeHtml(name)}</span>
-                    <span class="folder-bac__count">${bac.fileCount}</span>
+                    <span class="folder-bac__count">${isCompressing || isDone ? `${doneCount}/${totalBac}` : bac.fileCount}</span>
                 </div>
                 <div class="folder-bac__config">
                     <span class="folder-bac__rule" title="${escapeHtml(ruleDisplay)}">${escapeHtml(ruleDisplay)}</span>
                     <span class="folder-bac__preset">${escapeHtml(presetName)}</span>
                 </div>
+                ${(isCompressing || isDone) ? `
+                <div class="folder-bac__progress">
+                    <div class="folder-bac__progress-track">
+                        <div class="folder-bac__progress-fill ${isDone ? 'done' : ''}" style="width:${progressPct}%"></div>
+                    </div>
+                </div>` : ''}
                 <button class="folder-bac__edit btn--icon" data-folder="${escapeHtml(name)}" title="Modifier">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
@@ -445,6 +522,52 @@ function renderFolderBacs() {
             editBac(btn.dataset.folder);
         });
     });
+
+    // Drop targets: accepter les cartes drag & drop
+    list.querySelectorAll(".folder-bac").forEach(el => {
+        el.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            el.classList.add("drag-over");
+        });
+        el.addEventListener("dragleave", () => {
+            el.classList.remove("drag-over");
+        });
+        el.addEventListener("drop", (e) => {
+            e.preventDefault();
+            el.classList.remove("drag-over");
+            const fileIndex = parseInt(e.dataTransfer.getData("text/plain"));
+            if (isNaN(fileIndex)) return;
+
+            const file = state.files[fileIndex];
+            if (!file) return;
+
+            const folderName = el.dataset.folder;
+            // Assigner le fichier à ce bac via relativePath
+            file.relativePath = folderName + "/" + file.name;
+
+            // Mettre à jour les counts
+            rebuildBacCounts();
+            renderFolderBacs();
+            renderFiles();
+            showSnackbar(`${file.name} → ${folderName}`);
+        });
+    });
+}
+
+function rebuildBacCounts() {
+    // Reset tous les counts
+    for (const bac of Object.values(state.folderBacs)) {
+        bac.fileCount = 0;
+    }
+    // Recompter depuis les fichiers
+    for (const f of state.files) {
+        if (!f.relativePath || !f.relativePath.includes("/")) continue;
+        const folder = f.relativePath.split("/")[0];
+        if (state.folderBacs[folder]) {
+            state.folderBacs[folder].fileCount++;
+        }
+    }
 }
 
 function editBac(folderName) {
@@ -455,45 +578,86 @@ function editBac(folderName) {
         `<option value="${p.id}" ${p.id === bac.presetId ? 'selected' : ''}>${escapeHtml(p.name)}</option>`
     ).join("");
 
-    // Remplacer le bac par un formulaire inline
+    // Ajouter le form EN DESSOUS du contenu existant (la carte s'agrandit)
     const bacEl = document.querySelector(`.folder-bac[data-folder="${CSS.escape(folderName)}"]`);
     if (!bacEl) return;
 
-    bacEl.innerHTML = `
-        <div class="folder-bac__edit-form">
-            <div class="field" style="flex:1;margin:0">
-                <input type="text" class="field__input field__input--sm" id="bac-edit-template"
-                       value="${escapeHtml(bac.renameTemplate)}" placeholder="Ex: #SP-NL-{index}">
-            </div>
-            <select class="field__select field__select--sm" id="bac-edit-preset" style="width:140px">
-                <option value="">Reglages globaux</option>
-                ${presetOptions}
-            </select>
-            <button class="btn btn--tonal btn--sm" id="bac-edit-ok">OK</button>
+    // Retirer un form existant s'il y en a un
+    const existingForm = bacEl.querySelector(".folder-bac__edit-form");
+    if (existingForm) { existingForm.remove(); return; }
+
+    // Cacher le bouton crayon pendant l'edition
+    const editBtn = bacEl.querySelector(".folder-bac__edit");
+    if (editBtn) editBtn.style.display = "none";
+
+    const form = document.createElement("div");
+    form.className = "folder-bac__edit-form";
+    form.innerHTML = `
+        <input type="text" class="field__input field__input--sm" id="bac-edit-template"
+               value="${escapeHtml(bac.renameTemplate)}" placeholder="Ex: #SP-NL-{index}">
+        <select class="field__select field__select--sm" id="bac-edit-preset">
+            <option value="">Reglages globaux</option>
+            ${presetOptions}
+        </select>
+        <div class="folder-bac__edit-actions">
+            <button class="btn btn--tonal btn--sm" id="bac-edit-ok" style="flex:1">OK</button>
             <button class="btn btn--text btn--sm" id="bac-edit-cancel">Annuler</button>
         </div>
     `;
+    bacEl.appendChild(form);
 
     const templateInput = document.getElementById("bac-edit-template");
     templateInput.focus();
     templateInput.select();
 
-    document.getElementById("bac-edit-ok").addEventListener("click", () => {
+    const save = () => {
         bac.renameTemplate = templateInput.value.trim();
         bac.presetId = document.getElementById("bac-edit-preset").value || null;
         renderFolderBacs();
-    });
+    };
 
-    document.getElementById("bac-edit-cancel").addEventListener("click", () => {
-        renderFolderBacs();
-    });
+    document.getElementById("bac-edit-ok").addEventListener("click", save);
+    document.getElementById("bac-edit-cancel").addEventListener("click", () => renderFolderBacs());
 
     templateInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
-            bac.renameTemplate = templateInput.value.trim();
-            bac.presetId = document.getElementById("bac-edit-preset").value || null;
-            renderFolderBacs();
+        if (e.key === "Enter") save();
+        if (e.key === "Escape") renderFolderBacs();
+    });
+
+    // Empêcher le clic sur le form de toggler le filtre bac
+    form.addEventListener("click", (e) => e.stopPropagation());
+}
+
+function addManualBac() {
+    // Inline form dans la liste des bacs
+    const list = document.getElementById("folder-bacs-list");
+    const form = document.createElement("div");
+    form.className = "folder-bac folder-bac--form";
+    form.innerHTML = `
+        <input type="text" class="field__input field__input--sm" id="new-bac-name" placeholder="Nom du dossier" style="flex:1">
+        <button class="btn btn--tonal btn--sm" id="new-bac-ok">OK</button>
+        <button class="btn btn--text btn--sm" id="new-bac-cancel">Annuler</button>
+    `;
+    list.appendChild(form);
+
+    const input = document.getElementById("new-bac-name");
+    input.focus();
+
+    const confirm = () => {
+        const name = input.value.trim();
+        if (!name) return;
+        if (state.folderBacs[name]) {
+            showSnackbar("Ce bac existe deja");
+            return;
         }
+        state.folderBacs[name] = { renameTemplate: "", presetId: null, fileCount: 0 };
+        renderFolderBacs();
+    };
+
+    document.getElementById("new-bac-ok").addEventListener("click", confirm);
+    document.getElementById("new-bac-cancel").addEventListener("click", () => renderFolderBacs());
+    input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") confirm();
         if (e.key === "Escape") renderFolderBacs();
     });
 }
@@ -531,27 +695,58 @@ function importBacsCSV() {
 function parseBacsCSV(content) {
     const lines = content.split("\n").filter(l => l.trim());
     let matched = 0;
+    let created = 0;
 
-    for (const line of lines) {
-        const parts = line.split(";").map(s => s.trim());
+    // Detecter le separateur (virgule ou point-virgule)
+    const firstDataLine = lines.find(l => !l.startsWith("categorie") && !l.startsWith("dossier") && !l.startsWith("#"));
+    const separator = firstDataLine && firstDataLine.includes(";") ? ";" : ",";
+
+    // Skip header si present
+    const startIdx = (lines[0] && /^(categorie|dossier|folder|nom)/i.test(lines[0])) ? 1 : 0;
+
+    for (let i = startIdx; i < lines.length; i++) {
+        const line = lines[i];
+        const parts = line.split(separator).map(s => s.trim());
         if (parts.length < 2) continue;
 
         const folderName = parts[0];
-        const template = parts[1];
+        let template = parts[1];
         const presetName = parts[2] || null;
 
+        if (!folderName || !template) continue;
+
+        // Convertir {N} en {index} si besoin
+        template = template.replace(/\{N\}/gi, "{index}");
+
         if (state.folderBacs[folderName]) {
+            // Mettre a jour un bac existant
             state.folderBacs[folderName].renameTemplate = template;
             if (presetName) {
                 const preset = state.presets.find(p => p.name.toLowerCase() === presetName.toLowerCase());
                 if (preset) state.folderBacs[folderName].presetId = preset.id;
             }
             matched++;
+        } else {
+            // Creer un nouveau bac
+            state.folderBacs[folderName] = {
+                renameTemplate: template,
+                presetId: null,
+                fileCount: 0,
+            };
+            if (presetName) {
+                const preset = state.presets.find(p => p.name.toLowerCase() === presetName.toLowerCase());
+                if (preset) state.folderBacs[folderName].presetId = preset.id;
+            }
+            created++;
         }
     }
 
     renderFolderBacs();
-    showSnackbar(`${matched} dossier(s) configure(s) depuis le CSV`);
+    renderFiles();
+    const parts = [];
+    if (matched) parts.push(`${matched} mis a jour`);
+    if (created) parts.push(`${created} cree(s)`);
+    showSnackbar(`CSV importe : ${parts.join(", ") || "aucun dossier correspondant"}`);
 }
 
 
@@ -671,9 +866,17 @@ function renderFiles() {
         filtered = filtered.filter(f => (f.format || "").toLowerCase() === state.formatFilter);
     }
     if (state.activeBac) {
+        // Afficher les fichiers de ce bac
         filtered = filtered.filter(f => {
             if (!f.relativePath) return false;
             return f.relativePath.split("/")[0] === state.activeBac;
+        });
+    } else if (Object.keys(state.folderBacs).length > 0) {
+        // Vue globale avec bacs actifs : masquer les fichiers deja assignes a un bac
+        filtered = filtered.filter(f => {
+            if (!f.relativePath) return true; // pas assigne = visible
+            const folder = f.relativePath.split("/")[0];
+            return !state.folderBacs[folder]; // visible seulement si pas dans un bac
         });
     }
 
@@ -682,9 +885,25 @@ function renderFiles() {
         state.formatFilter = null;
     }
 
-    const countText = state.formatFilter
-        ? `${filtered.length} / ${state.files.length} fichier(s)`
-        : `${state.files.length} fichier(s)`;
+    const assignedCount = state.files.filter(f => {
+        if (!f.relativePath) return false;
+        const folder = f.relativePath.split("/")[0];
+        return !!state.folderBacs[folder];
+    }).length;
+    const hasBacs = Object.keys(state.folderBacs).length > 0;
+
+    let countText;
+    if (state.activeBac) {
+        countText = `${filtered.length} fichier(s) dans "${state.activeBac}"`;
+    } else if (hasBacs && filtered.length === 0 && assignedCount > 0) {
+        countText = `${state.files.length} fichier(s) — ${assignedCount} dans les dossiers`;
+    } else if (hasBacs) {
+        countText = `${filtered.length} non-assigne(s) / ${state.files.length} total`;
+    } else if (state.formatFilter) {
+        countText = `${filtered.length} / ${state.files.length} fichier(s)`;
+    } else {
+        countText = `${state.files.length} fichier(s)`;
+    }
     const countEl = document.getElementById("file-count");
     if (state.sourceRootDir) {
         const folderName = state.sourceRootDir.split("/").pop();
@@ -695,6 +914,16 @@ function renderFiles() {
 
     const gridEl = document.getElementById("file-grid");
     const listEl = document.getElementById("file-list");
+
+    // Message quand tous les fichiers sont dans des bacs
+    if (filtered.length === 0 && hasBacs && assignedCount > 0) {
+        gridEl.classList.remove("hidden");
+        listEl.classList.add("hidden");
+        gridEl.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:48px 20px;color:var(--md-sys-color-on-surface-variant);font-size:14px;">
+            Tous les fichiers sont dans des dossiers.<br>Cliquez sur un dossier pour voir ses fichiers, ou appuyez sur <strong>Compresser</strong> pour tout exporter.
+        </div>`;
+        return;
+    }
 
     if (state.viewMode === "grid") {
         gridEl.classList.remove("hidden");
@@ -883,7 +1112,7 @@ function renderGrid(container, files) {
         const expandAction = f.result ? "preview" : "fullscreen";
         const expandOverlay = `<div class="file-card__thumb-overlay" data-action="${expandAction}" data-index="${i}">${expandSvg}</div>`;
 
-        return `<div class="file-card ${statusClass}" title="${escapedPath}">
+        return `<div class="file-card ${statusClass}" title="${escapedPath}" draggable="true" data-file-index="${i}">
             ${progressBar}
             <div class="file-card__header">
                 <div class="file-card__header-left">
@@ -904,6 +1133,21 @@ function renderGrid(container, files) {
             ${footerContent ? `<div class="file-card__footer">${footerContent}</div>` : ''}
         </div>`;
     }).join("");
+
+    // Drag & drop: cartes vers bacs
+    container.querySelectorAll(".file-card[draggable]").forEach(card => {
+        card.addEventListener("dragstart", (e) => {
+            e.dataTransfer.setData("text/plain", card.dataset.fileIndex);
+            e.dataTransfer.effectAllowed = "move";
+            card.classList.add("dragging");
+            state._internalDrag = true;
+        });
+        card.addEventListener("dragend", () => {
+            card.classList.remove("dragging");
+            state._internalDrag = false;
+            document.querySelectorAll(".folder-bac.drag-over").forEach(b => b.classList.remove("drag-over"));
+        });
+    });
 }
 
 // ── List Rendering ────────────────────────
@@ -1185,6 +1429,19 @@ function setupLosslessToggle() {
     });
     updateLosslessVisibility();
 
+    // Compression adaptative toggle
+    const adaptiveToggle = document.getElementById("adaptive-toggle");
+    const adaptivePreview = document.getElementById("adaptive-preview");
+    adaptiveToggle.addEventListener("change", () => {
+        adaptivePreview.classList.toggle("hidden", !adaptiveToggle.checked);
+        // Quand adaptatif est actif, griser les boutons de qualite
+        const levelBtns = document.getElementById("level-buttons");
+        levelBtns.classList.toggle("disabled-overlay", adaptiveToggle.checked);
+        resetResultsOnSettingsChange();
+        updateLevelEstimates();
+        updatePreCompressionSummary();
+    });
+
     // target-size, strip-metadata : reset on change
     document.getElementById("target-size").addEventListener("input", () => {
         resetResultsOnSettingsChange();
@@ -1422,6 +1679,8 @@ function gatherSettings() {
         // Rename
         rename_template: document.getElementById("rename-template").value || "",
         rename_clean: document.getElementById("rename-clean").checked,
+        // Compression adaptative
+        adaptive_compression: document.getElementById("adaptive-toggle").checked,
     };
 }
 
@@ -1549,6 +1808,9 @@ function resetFieldsToDefaults() {
     document.getElementById("strip-metadata").checked = false;
     document.getElementById("target-size").value = "";
     document.getElementById("lossless-toggle").checked = false;
+    document.getElementById("adaptive-toggle").checked = false;
+    document.getElementById("adaptive-preview").classList.add("hidden");
+    document.getElementById("level-buttons").classList.remove("disabled-overlay");
 
     // Export
     document.getElementById("rename-template").value = "";
@@ -1569,6 +1831,7 @@ async function startCompression() {
     if (state.compressing || state.files.length === 0) return;
     state.compressing = true;
     updateCompressButton();
+    document.getElementById("bacs-export-done").classList.add("hidden");
 
     const settings = gatherSettings();
     fetch("/api/settings", {
@@ -1596,6 +1859,21 @@ async function startCompression() {
     if (state.sourceRootDir) {
         compressPayload.source_root_dir = state.sourceRootDir;
     }
+    // Envoyer le mapping fichier → dossier bac pour les fichiers assignes manuellement
+    if (Object.keys(state.folderBacs).length > 0) {
+        const fileToFolder = {};
+        for (const f of state.files) {
+            if (f.relativePath && f.relativePath.includes("/")) {
+                const folder = f.relativePath.split("/")[0];
+                if (state.folderBacs[folder]) {
+                    fileToFolder[f.path] = folder;
+                }
+            }
+        }
+        if (Object.keys(fileToFolder).length > 0) {
+            compressPayload.file_to_folder = fileToFolder;
+        }
+    }
     if (Object.keys(state.formatPresetMap).length > 0) {
         // Resoudre les preset IDs en settings
         const formatSettings = {};
@@ -1609,11 +1887,10 @@ async function startCompression() {
             compressPayload.format_settings = formatSettings;
         }
     }
-    // Per-folder bac settings
+    // Per-folder bac settings (envoyer TOUS les bacs pour creer les sous-dossiers)
     if (Object.keys(state.folderBacs).length > 0) {
         const folderSettings = {};
         for (const [folder, bac] of Object.entries(state.folderBacs)) {
-            if (!bac.renameTemplate && !bac.presetId) continue;
             const entry = {};
             if (bac.renameTemplate) entry.rename_template = bac.renameTemplate;
             if (bac.presetId) {
@@ -1747,6 +2024,7 @@ function connectSSE() {
                 }
                 scheduleRender();
                 updateSummary();
+                if (Object.keys(state.folderBacs).length > 0) renderFolderBacs();
                 break;
             }
 
@@ -1757,6 +2035,7 @@ function connectSSE() {
                 }
                 state.filesCompletedCount++;
                 scheduleRender();
+                if (Object.keys(state.folderBacs).length > 0) renderFolderBacs();
                 break;
             }
 
@@ -1766,6 +2045,12 @@ function connectSSE() {
                     state.lastOutputDir = data.output_dir;
                     showOpenFolderButton();
                 }
+                // Afficher le bouton "Voir l'export" dans la sidebar bacs
+                if (Object.keys(state.folderBacs).length > 0 && data.output_dir) {
+                    const exportDone = document.getElementById("bacs-export-done");
+                    exportDone.classList.remove("hidden");
+                }
+                if (Object.keys(state.folderBacs).length > 0) renderFolderBacs();
                 updateCompressButton();
                 // Animation de fin : checkmark + texte
                 document.getElementById("progress-fill").style.width = "100%";
@@ -2745,6 +3030,12 @@ function renderPresetCards() {
     const empty = document.getElementById("preset-modal-empty");
     const footer = document.getElementById("preset-modal-footer");
 
+    if (!list || !empty || !footer) {
+        console.error("renderPresetCards: missing DOM elements", { list: !!list, empty: !!empty, footer: !!footer });
+        return;
+    }
+
+    console.log("renderPresetCards: cats=", state.categories.length, "presets=", state.presets.length);
     list.innerHTML = "";
 
     if (state.presets.length === 0 && state.categories.length === 0) {
